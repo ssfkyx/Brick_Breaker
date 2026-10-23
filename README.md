@@ -16,10 +16,15 @@ self-contained Windows executable is included for machines without Python.
 - **Paddle english** — the bounce angle depends on both the hit offset and the paddle's instantaneous velocity.
 - **Brick state machine** — `INTACT → CRACKED → FADING → GONE`; a destroyed brick stops colliding immediately and fades out, so it cannot be scored twice.
 - **Combo scoring** — a multiplier up to ×5, row-based brick values, clear bonuses, and a per-level speed ramp.
-- **Procedural audio** — all sound effects are synthesised at startup; the game degrades to silence if no audio device is available.
+- **Procedural audio with selectable timbres** — all cues are synthesised from a
+  harmonic-spectrum engine, and `T` cycles four instruments: the original SINE
+  voice, PIANO, CLASSICAL (nylon-string) and ACOUSTIC (steel-string) guitar. Every
+  preset shares the same note table, so pitches and rhythm never change; no audio
+  files are shipped, and the game degrades to silence without an audio device.
 - **Resizable and fullscreen** — geometry is derived from the current window size, and losing focus pauses the game automatically.
 - **Windows release** — `windows_release/BrickBreaker.exe` bundles Python and pygame, so no installation is required.
-- **Tested** — a headless `unittest` suite and GitHub Actions CI on Ubuntu and Windows (Python 3.10 and 3.12).
+- **Tested** — 17 headless `unittest` tests and GitHub Actions CI on Ubuntu and
+  Windows (Python 3.10 and 3.12).
 - **MIT licensed** — see [`LICENSE`](LICENSE).
 
 ## Quick start
@@ -30,8 +35,10 @@ self-contained Windows executable is included for machines without Python.
 2. Open `windows_release/`.
 3. Double-click **`BrickBreaker.exe`**.
 
-`启动游戏.bat` in the same folder is an optional launcher. It starts the exe
-when present and falls back to the source version if Python is available.
+`启动游戏.bat` in the same folder is an optional launcher. When the runtime has
+already been unpacked it starts the cached game directly (fast, and it bypasses
+the self-extractor); otherwise it starts the exe, and as a last resort it runs
+the source version if Python is available.
 
 On the first launch, the exe unpacks its private runtime to
 `%LOCALAPPDATA%\BrickBreaker` (about 33 MB) and then starts the game. Later
@@ -76,9 +83,28 @@ smoke tests, but that is not a playable display.
 | `P` | Pause / resume |
 | `R` | Restart the run |
 | `M` | Mute / unmute |
+| `T` | Cycle instrument sound (SINE → PIANO → CLASSICAL → ACOUSTIC) |
 | `F` | Toggle fullscreen |
 | `Q` or `Esc` | Quit |
 | `R` / `Q` on game over | Restart / quit |
+
+## Sound
+
+All audio is synthesised at run time — the repository ships no sound files. The
+same set of cues is rendered from one instrument-independent note table, so the
+melody, timing and volume balance never change; `T` only swaps the timbre:
+
+| Preset | HUD label | Character |
+| --- | --- | --- |
+| `SINE` | `SND SINE` | the original v1.0.0 electronic voice (default) |
+| `PIANO` | `SND PIANO` | fast hammer attack, six harmonics, exponential decay |
+| `CLASSICAL` | `SND CLASSICAL` | nylon-string guitar: soft attack, warm, fewer high harmonics |
+| `ACOUSTIC` | `SND ACOUSTIC` | steel-string guitar: bright pick attack, strong harmonics |
+
+The first switch to a preset synthesises and caches it (~0.1–0.2 s once); later
+switches are instant. The selection is process-local (not written to disk), like
+the best score. If no audio device is available the game keeps running silently
+and still cycles the HUD label.
 
 ## Rules and scoring
 
@@ -189,8 +215,10 @@ The tests force SDL's dummy video/audio drivers before pygame is imported, so
 they run without a display or a sound card — locally, on a server, and in CI.
 They cover configuration and geometry, `App`/`Renderer` construction and
 drawing, ball launch movement, combo/scoring rules, the brick damage state
-machine, and the game-over transition. See [`tests/README.md`](tests/README.md)
-for the details.
+machine, the game-over transition, and the audio subsystem (note table and
+preset data, the bit-identical SINE voice, distinct bounded PCM for every
+acoustic preset, lazy instrument switching, no-mixer degradation, and the
+`T`-key intent path). See [`tests/README.md`](tests/README.md) for the details.
 
 Maintainer checkouts that already contain the generated Windows payload can run
 the same suite without installing anything:
@@ -213,6 +241,11 @@ The included `BrickBreaker.exe` is a single-file NSIS self-extractor containing:
 
 The build script is [`build_win/BrickBreaker.nsi`](build_win/BrickBreaker.nsi).
 It targets 64-bit Windows and writes `windows_release/BrickBreaker.exe`.
+
+The binary committed under `windows_release/` is built from this source. After
+changing `bb_v1/brick_breaker.py` (for example when adding instrument presets),
+rebuild it with the script below — or let the release workflow rebuild it for a
+tagged release — otherwise the exe keeps shipping the previous game code.
 
 ### Rebuild it locally
 
@@ -240,7 +273,7 @@ makensis BrickBreaker.nsi
 
 ### Automated release build
 
-Pushing a `v*` tag (for example `v1.0.0`) runs
+Pushing a `v*` tag (for example `v1.1.0`) runs
 [`.github/workflows/release.yml`](.github/workflows/release.yml) on a
 GitHub-hosted Windows runner. It rebuilds the exe with the same pinned inputs,
 runs the test suite first, uploads the executable as a workflow artifact, and
@@ -264,21 +297,28 @@ also flag unsigned self-extracting Python executables.
 
 ## Verification and limitations
 
-- The game source is smoke-tested headlessly by the [`tests/`](tests/) suite:
-  configuration and geometry, `App`/`Renderer` construction and drawing, ball
-  launch, scoring rules, the brick damage state machine, and the game-over
-  transition. The suite is wired into CI for Ubuntu and Windows with Python
-  3.10 and 3.12.
-- The bundled executable was verified end-to-end on Windows 10 22H2 (64-bit)
-  with its extracted runtime cache present: repeated launches (window visible in
-  0.6–1.1 s), the one-click `启动游戏.bat` launcher (0.64 s), keyboard controls
-  (launch, arrows, pause, mute, fullscreen), and clean shutdown (`Esc` in
-  ~0.2 s). No `startup_error.log` was produced, and the cached game source is
-  byte-identical to `build_win/payload/app/brick_breaker.py`.
-- The one-off first-run unpack into `%LOCALAPPDATA%\BrickBreaker` (~33 MB) could
-  not be repeated in the final verification because the cache must not be
-  deleted; it was exercised when the exe was first run on the build machine.
-  Delete that folder to reproduce the unpack path.
+- The game source is smoke-tested headlessly by the [`tests/`](tests/) suite
+  (17 tests): configuration and geometry, `App`/`Renderer` construction and
+  drawing, ball launch, scoring rules, the brick damage state machine, the
+  game-over transition, and the audio subsystem (note/preset data, the
+  bit-identical SINE voice, distinct bounded PCM for every acoustic preset,
+  lazy switching, no-mixer degradation and the `T` intent). The suite is wired
+  into CI for Ubuntu and Windows with Python 3.10 and 3.12.
+- The instrument presets were exercised in a real window with the packaged
+  runtime on Windows 10 22H2: `T` cycled `SINE → PIANO → CLASSICAL → ACOUSTIC`,
+  the HUD label followed, and shutdown stayed clean (`Esc` in ~0.2 s).
+- The Windows payload was verified end-to-end on Windows 10 22H2 (64-bit) by
+  installing it into a test directory with the same NSIS script: 196 files
+  extracted, the game window appeared, and all four presets, pause, mute and
+  fullscreen behaved as expected. Screenshots and audition WAVs are kept in the
+  maintainer's local `verification/` folder.
+- The committed `windows_release/BrickBreaker.exe` is a v1.1.0 NSIS build. The
+  one-off self-extraction step could not be re-run inside the automation
+  harness because its process TEMP folder is invalid for NSIS ("Error writing
+  temporary file"); the same error occurs with the previous v1.0.0 build, so it
+  is an environment artifact, not a build defect. A normal Explorer double-click
+  uses the user's valid TEMP. `启动游戏.bat` also skips the self-extractor when
+  the runtime cache already exists.
 - The exe has no single-instance guard: launching it twice opens two independent
   games.
 - The Windows build inputs are pinned and SHA256-verified by both
@@ -303,6 +343,10 @@ Known milestones:
   suite, GitHub Actions CI and release workflows, reproducible
   `build_win/build_windows.ps1`, Chinese README, CHANGELOG, CONTRIBUTING, and
   the reserved `bb_v2/` placeholder.
+- **2026-10-23** — v1.1.0 audio timbres: instrument-independent note table,
+  data-driven instrument presets, wavetable synthesis with attack transients,
+  lazy per-preset synthesis and caching, `T` key to cycle SINE / PIANO /
+  CLASSICAL / ACOUSTIC, HUD label, and 9 new headless audio tests.
 
 ## Contributing
 
@@ -318,3 +362,4 @@ Copyright (c) 2026 Brick Breaker contributors.
 
 The bundled Python runtime and pygame-ce keep their own upstream licenses
 (Python is distributed under the PSF License; pygame-ce under the LGPL-2.1).
+

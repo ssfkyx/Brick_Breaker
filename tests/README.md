@@ -14,6 +14,12 @@ test dependencies — so it runs on any machine that can already run the game.
 | `ScoringRulesTests` | combo multiplier ladder and cap, brick points, level bonus, level speed ramp and the rally-speed cap |
 | `SessionTests` | launch (`READY → PLAYING`, ball moves on fixed `PHYSICS_STEP` updates) and losing all lives through `FLOOR` collisions up to `GAME_OVER` + restart |
 | `AppTests` | `App` construction at a small size, `Renderer.draw()` into the surface, headless `pygame.display.flip()`, and window resize |
+| `AudioNoteTableTests` | cue names vs `NOTE_TABLE`, preset data invariants, identical note durations across presets |
+| `SynthesisTests` | SINE stays bit-identical to the v1.0.0 voice; acoustic presets produce distinct, bounded 16-bit PCM; mono/stereo interleaving |
+| `SoundBankTests` | lazy preset switching with cached timbres and stable cue durations; mute; graceful degradation when no mixer is available |
+| `AudioIntentTests` | `Intent.CYCLE_INSTRUMENT` updates `Settings.instrument`, the bank and the HUD-visible label; `T` key mapping |
+
+17 tests in total, all headless.
 
 The suite forces `SDL_VIDEODRIVER=dummy` and `SDL_AUDIODRIVER=dummy` in the test
 module *before* pygame is imported, so no display or sound device is required.

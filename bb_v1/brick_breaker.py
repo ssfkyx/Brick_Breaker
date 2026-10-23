@@ -14,6 +14,7 @@ Controls
     P                              pause / resume          暂停
     R                              restart the run         重开
     M                              mute / unmute           静音
+    T                              change instrument       切换音色（SINE/钢琴/吉他）
     F                              toggle fullscreen       全屏
     Q / Escape                     quit                    退出
     After a game over: R restarts, Q quits.
@@ -97,6 +98,12 @@ POPUP_RISE = 34.0
 
 BRICK_TONES = 8                     # number of pre-rendered brick blip pitches
 
+# Audio (M7): the game ships no audio files, so every instrument preset is
+# synthesised from these settings at run time.
+DEFAULT_INSTRUMENT = "SINE"         # preset selected on start-up (v1.0.0 sound)
+AUDIO_TABLE_SIZE = 2048             # samples per wavetable cycle
+AUDIO_TAIL_FADE = 0.012             # seconds of fade-out to avoid an end click
+
 # Palette
 COLOR_BG_TOP = (13, 15, 29)
 COLOR_BG_BOTTOM = (30, 22, 50)
@@ -162,6 +169,7 @@ class Intent(Enum):
     RESTART = "restart"
     QUIT = "quit"
     TOGGLE_MUTE = "toggle_mute"
+    CYCLE_INSTRUMENT = "cycle_instrument"   # T: next procedural instrument timbre
     TOGGLE_FULLSCREEN = "toggle_fullscreen"
     RESIZE = "resize"
     FOCUS_LOST = "focus_lost"
@@ -385,6 +393,7 @@ class Settings:
     muted: bool = False
     fullscreen: bool = False
     window_size: Tuple[int, int] = (WINDOW_WIDTH, WINDOW_HEIGHT)
+    instrument: str = DEFAULT_INSTRUMENT
 
 
 @dataclass
@@ -746,12 +755,212 @@ class LevelFactory:
 
 
 # ===========================================================================
-# M7 AUDIO -- 程序化音效
+# M7 AUDIO -- 程序化音效、音色预设与懒合成（无外部音频文件）
+#   NOTE_TABLE     : 与音色无关的“乐谱”（音高滑动/时长/音量，v1.0.0 原值）
+#   InstrumentPreset: 数据化的音色（泛音列/包络/瞬态），不含逻辑
+#   render_note    : 纯函数合成器，输入 note + preset -> 16-bit PCM
+#   SoundBank      : 生命周期/缓存/播放/静音/音色切换；对 M10 只暴露 play()
+# 依赖方向：M7 -> M1（常量）；M10 -> M7；M8 只读 audio 状态用于 HUD。
 # ===========================================================================
 
-class SoundBank:
-    """Procedural sound effects with graceful degradation.
+@dataclass(frozen=True)
+class SoundNote:
+    """One note recipe, independent of the instrument that renders it.
 
+    ``NOTE_TABLE`` below is the game's score: exactly the pitches, durations and
+    levels used since v1.0.0.  A preset only changes *how* a note is rendered,
+    so every instrument plays the same music.
+    """
+    start_hz: float
+    end_hz: float
+    milliseconds: int
+    volume: float
+
+
+@dataclass(frozen=True)
+class InstrumentPreset:
+    """Data-only timbre definition: spectrum, envelope and attack transient.
+
+    The preset holds no behaviour; ``render_note()`` interprets it.  Adding a
+    new instrument therefore means adding one entry to ``INSTRUMENT_PRESETS``.
+    ``gain`` is calibrated per preset so switching never changes loudness much.
+    """
+    key: str
+    label: str
+    partials: Tuple[float, ...]         # relative level of harmonic 1, 2, 3 ...
+    attack_s: float = 0.004
+    decay_ratio: float = 0.40           # decay time constant = duration * ratio
+    noise: float = 0.0                  # hammer/pick transient level (0..1)
+    noise_decay_s: float = 0.005
+    gain: float = 1.0
+    linear_decay: bool = False          # legacy SINE envelope: keeps v1.0.0 sound
+
+
+# The note table is the single source of truth for the game's audible score.
+# Every entry is played through SoundBank.play(name) by M10.
+NOTE_TABLE: Dict[str, SoundNote] = {
+    **{
+        f"brick{index}": SoundNote(
+            start_hz=520.0 + index * 55.0,
+            end_hz=(520.0 + index * 55.0) * 1.35,
+            milliseconds=60,
+            volume=0.22,
+        )
+        for index in range(BRICK_TONES)
+    },
+    "paddle": SoundNote(300.0, 380.0, 70, 0.30),
+    "wall": SoundNote(430.0, 430.0, 45, 0.16),
+    "crack": SoundNote(240.0, 180.0, 70, 0.24),
+    "launch": SoundNote(300.0, 700.0, 120, 0.24),
+    "life_lost": SoundNote(420.0, 110.0, 520, 0.28),
+    "level_clear": SoundNote(520.0, 1050.0, 320, 0.26),
+    "game_over": SoundNote(440.0, 90.0, 800, 0.30),
+    # Not a gameplay cue: a short, bright two-step chirp used to audition the
+    # instrument when the player presses T.
+    "preview": SoundNote(660.0, 990.0, 140, 0.22),
+}
+
+# Ordered cycle for the T key.  SINE is bit-for-bit the v1.0.0 voice and stays
+# the default; the acoustic presets only change timbre (same NOTE_TABLE score).
+INSTRUMENT_PRESETS: Dict[str, InstrumentPreset] = {
+    "SINE": InstrumentPreset(
+        key="SINE",
+        label="SINE",
+        partials=(1.0,),
+        linear_decay=True,
+    ),
+    "PIANO": InstrumentPreset(
+        key="PIANO",
+        label="PIANO",
+        partials=(1.0, 0.45, 0.28, 0.16, 0.09, 0.05),
+        attack_s=0.003,
+        decay_ratio=0.35,
+        noise=0.10,                 # hammer thump
+        noise_decay_s=0.004,
+        gain=1.70,
+    ),
+    "CLASSICAL": InstrumentPreset(
+        key="CLASSICAL",
+        label="CLASSICAL",
+        partials=(1.0, 0.32, 0.12, 0.05, 0.02),
+        attack_s=0.006,
+        decay_ratio=0.50,           # nylon strings ring a little longer
+        noise=0.06,                 # finger / nail attack
+        noise_decay_s=0.006,
+        gain=1.40,
+    ),
+    "ACOUSTIC": InstrumentPreset(
+        key="ACOUSTIC",
+        label="ACOUSTIC",
+        partials=(1.0, 0.55, 0.34, 0.20, 0.11, 0.06),
+        attack_s=0.003,
+        decay_ratio=0.38,
+        noise=0.16,                 # steel-string pick attack
+        noise_decay_s=0.003,
+        gain=1.65,
+    ),
+}
+
+
+def _note_hz(note: SoundNote, progress: float) -> float:
+    """Linear pitch glide, matching the v1.0.0 sweep exactly."""
+    return note.start_hz + (note.end_hz - note.start_hz) * progress
+
+
+def build_wavetable(partials: Sequence[float], size: int = AUDIO_TABLE_SIZE) -> List[float]:
+    """Sum one cycle of the preset's harmonic spectrum, normalised to 0.85 peak."""
+    table = [0.0] * size
+    for harmonic, amplitude in enumerate(partials, start=1):
+        if amplitude == 0.0:
+            continue
+        step = 2.0 * math.pi * harmonic / size
+        for index in range(size):
+            table[index] += amplitude * math.sin(step * index)
+    peak = max((abs(value) for value in table), default=1.0) or 1.0
+    scale = 0.85 / peak
+    return [value * scale for value in table]
+
+
+def _noise_seed(preset: InstrumentPreset, note: SoundNote) -> int:
+    """Stable seed so the transient noise is identical on every run/platform."""
+    return (int(note.start_hz) * 31 + note.milliseconds) ^ (
+        sum((index + 1) * ord(char) for index, char in enumerate(preset.key))
+    )
+
+
+def render_note(
+    note: SoundNote,
+    preset: InstrumentPreset,
+    table: Sequence[float],
+    rate: int,
+    channels: int = 1,
+) -> array:
+    """Render one note to interleaved 16-bit little-endian PCM samples.
+
+    Pure function (no pygame, no global state), so the synthesis is unit-testable
+    without a window or an audio device.  ``table`` is ignored by legacy SINE.
+    """
+    count = max(1, int(rate * note.milliseconds / 1000.0))
+    samples = array("h", bytes(2 * count * channels))
+    amplitude = 32767.0 * note.volume * preset.gain
+
+    if preset.linear_decay:
+        # Legacy v1.0.0 voice: one sine, linear frequency glide, linear decay.
+        phase = 0.0
+        for index in range(count):
+            progress = index / count
+            hz = _note_hz(note, progress)
+            phase += 2.0 * math.pi * hz / rate
+            value = int(amplitude * (1.0 - progress) * math.sin(phase))
+            for channel in range(channels):
+                samples[index * channels + channel] = value
+        return samples
+
+    size = len(table)
+    mask = size - 1
+    inc_scale = size / rate
+    attack = max(1, int(preset.attack_s * rate))
+    tau = max(0.008, note.milliseconds / 1000.0 * preset.decay_ratio)
+    decay = math.exp(-1.0 / (tau * rate))
+    tail = max(1, int(AUDIO_TAIL_FADE * rate))
+    use_noise = preset.noise > 0.0
+    noise_samples = max(1, int(preset.noise_decay_s * rate * 4.0)) if use_noise else 0
+    noise_decay = math.exp(-1.0 / (max(1e-4, preset.noise_decay_s) * rate))
+    rng = random.Random(_noise_seed(preset, note))
+    low = 0.0
+    noise_env = 1.0
+    phase = 0.0
+    env = 0.0
+    for index in range(count):
+        hz = _note_hz(note, index / count)
+        phase += hz * inc_scale
+        if phase >= size:
+            phase -= size
+        position = int(phase)
+        fraction = phase - position
+        value = table[position] + (table[(position + 1) & mask] - table[position]) * fraction
+        if use_noise and index < noise_samples:
+            low += 0.32 * ((rng.random() * 2.0 - 1.0) - low)
+            value += low * 4.0 * preset.noise * noise_env
+            noise_env *= noise_decay
+        if index < attack:
+            env += 1.0 / attack
+        else:
+            env *= decay
+        fade = 1.0
+        if index > count - tail:
+            fade = (count - index) / tail
+        sample = int(max(-1.0, min(1.0, value * env * fade)) * amplitude)
+        for channel in range(channels):
+            samples[index * channels + channel] = sample
+    return samples
+
+
+class SoundBank:
+    """Procedural sound effects with selectable instrument timbres.
+
+    Each preset is synthesised lazily on first use and cached, so start-up keeps
+    the v1.0.0 cost (~65 ms) and switching costs a one-off render (~100 ms).
     If the mixer or an audio device is unavailable (headless machines, some WSL
     setups), the bank disables itself and the game keeps running silently.
     """
@@ -759,58 +968,81 @@ class SoundBank:
     def __init__(self) -> None:
         self.enabled = False
         self.muted = False
+        self.instrument = DEFAULT_INSTRUMENT
         self.sounds: Dict[str, pygame.mixer.Sound] = {}
+        self._rate = 44100
+        self._channels = 1
+        self._cache: Dict[str, Dict[str, pygame.mixer.Sound]] = {}
+        self._tables: Dict[str, List[float]] = {}
         try:
             if pygame.mixer.get_init() is None:
                 pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
             init = pygame.mixer.get_init()
             if not init:
                 return
-            _, size, channels = init
+            self._rate, size, channels = init
             if size != -16 or channels < 1:
                 return
-            self._build()
+            self._channels = int(channels)
+            self.sounds = self._build_instrument(self.instrument)
+            self._cache[self.instrument] = self.sounds
             self.enabled = True
         except (pygame.error, ValueError, TypeError):
             self.enabled = False
 
     # -- synthesis ---------------------------------------------------------
-    def _tone(
-        self,
-        start_hz: float,
-        end_hz: float,
-        milliseconds: int,
-        volume: float = 0.25,
-        decay: bool = True,
-    ) -> pygame.mixer.Sound:
-        frequency, _, channels = pygame.mixer.get_init()
-        count = max(1, int(frequency * milliseconds / 1000.0))
-        samples = array("h", bytes(2 * count * channels))
-        amplitude = 32767.0 * volume
-        phase = 0.0
-        for index in range(count):
-            progress = index / count
-            hz = start_hz + (end_hz - start_hz) * progress
-            phase += 2.0 * math.pi * hz / frequency
-            envelope = (1.0 - progress) if decay else 1.0
-            value = int(amplitude * envelope * math.sin(phase))
-            for channel in range(channels):
-                samples[index * channels + channel] = value
-        if sys.byteorder == "big":      # keep the buffer little-endian for SDL
-            samples.byteswap()
-        return pygame.mixer.Sound(buffer=samples.tobytes())
+    def _table(self, key: str) -> List[float]:
+        table = self._tables.get(key)
+        if table is None:
+            table = build_wavetable(INSTRUMENT_PRESETS[key].partials)
+            self._tables[key] = table
+        return table
 
-    def _build(self) -> None:
-        for index in range(BRICK_TONES):
-            hz = 520.0 + index * 55.0
-            self.sounds[f"brick{index}"] = self._tone(hz, hz * 1.35, 60, 0.22)
-        self.sounds["paddle"] = self._tone(300, 380, 70, 0.30)
-        self.sounds["wall"] = self._tone(430, 430, 45, 0.16)
-        self.sounds["crack"] = self._tone(240, 180, 70, 0.24)
-        self.sounds["launch"] = self._tone(300, 700, 120, 0.24)
-        self.sounds["life_lost"] = self._tone(420, 110, 520, 0.28)
-        self.sounds["level_clear"] = self._tone(520, 1050, 320, 0.26)
-        self.sounds["game_over"] = self._tone(440, 90, 800, 0.30)
+    def _build_instrument(self, key: str) -> Dict[str, pygame.mixer.Sound]:
+        preset = INSTRUMENT_PRESETS[key]
+        table = self._table(key)
+        built: Dict[str, pygame.mixer.Sound] = {}
+        for name, note in NOTE_TABLE.items():
+            samples = render_note(note, preset, table, self._rate, self._channels)
+            if sys.byteorder == "big":      # keep the buffer little-endian for SDL
+                samples.byteswap()
+            built[name] = pygame.mixer.Sound(buffer=samples.tobytes())
+        return built
+
+    # -- instruments -------------------------------------------------------
+    @property
+    def instrument_label(self) -> str:
+        """Display label of the active instrument (safe when audio is disabled)."""
+        preset = INSTRUMENT_PRESETS.get(self.instrument)
+        return preset.label if preset is not None else self.instrument
+
+    def set_instrument(self, key: str) -> str:
+        """Select *key*, synthesising and caching it on first use.
+
+        The selection is model state: it changes even when audio is disabled, so
+        the HUD and tests observe the same cycle on every machine.
+        """
+        if key not in INSTRUMENT_PRESETS:
+            return self.instrument
+        self.instrument = key
+        if not self.enabled:
+            return self.instrument
+        try:
+            if key not in self._cache:
+                self._cache[key] = self._build_instrument(key)
+            self.sounds = self._cache[key]
+        except (pygame.error, ValueError, TypeError, OverflowError):
+            self.enabled = False       # keep playing silently rather than crash
+        return self.instrument
+
+    def cycle_instrument(self, step: int = 1) -> str:
+        """Cycle through the presets in declaration order (T key)."""
+        keys = list(INSTRUMENT_PRESETS)
+        try:
+            current = keys.index(self.instrument)
+        except ValueError:
+            current = 0
+        return self.set_instrument(keys[(current + step) % len(keys)])
 
     # -- playback ----------------------------------------------------------
     def play(self, name: str) -> None:
@@ -1062,14 +1294,16 @@ class Renderer:
                 bold=True,
             )
 
+        sound_label = f"SND {session.audio.instrument_label}"
         if session.audio.muted:
-            self._blit_text(
-                screen,
-                "MUTED",
-                int(clamp(layout.height * 0.021, 11, 20)),
-                COLOR_TEXT_DIM,
-                midright=(layout.width - pad, badge_y),
-            )
+            sound_label += " | MUTED"
+        self._blit_text(
+            screen,
+            sound_label,
+            int(clamp(layout.height * 0.021, 11, 20)),
+            COLOR_TEXT_DIM,
+            midright=(layout.width - pad, badge_y),
+        )
 
     def _dim(self, layout: FieldLayout, alpha: int) -> pygame.Surface:
         surface = pygame.Surface((layout.width, layout.height), pygame.SRCALPHA)
@@ -1109,7 +1343,7 @@ class Renderer:
                 )
                 self._blit_text(
                     screen,
-                    "Left / Right arrows move the paddle    P pause    F fullscreen    Q quit",
+                    "Left / Right arrows move the paddle    P pause    F fullscreen    T sound    Q quit",
                     int(clamp(height * 0.023, 12, 23)),
                     COLOR_TEXT_DIM,
                     center=(width * 0.5, center_y + height * 0.15),
@@ -1125,7 +1359,7 @@ class Renderer:
                 )
                 self._blit_text(
                     screen,
-                    "Left / Right arrows move the paddle",
+                    "Left / Right arrows move the paddle    T sound",
                     int(clamp(height * 0.024, 13, 24)),
                     COLOR_TEXT_DIM,
                     center=(width * 0.5, center_y + height * 0.065),
@@ -1212,6 +1446,7 @@ class InputController:
         pygame.K_q: Intent.QUIT,
         pygame.K_ESCAPE: Intent.QUIT,
         pygame.K_m: Intent.TOGGLE_MUTE,
+        pygame.K_t: Intent.CYCLE_INSTRUMENT,
         pygame.K_f: Intent.TOGGLE_FULLSCREEN,
         pygame.K_r: Intent.RESTART,
         pygame.K_p: Intent.TOGGLE_PAUSE,
@@ -1383,6 +1618,12 @@ class GameSession:
 
         elif intent is Intent.TOGGLE_MUTE:
             self.settings.muted = self.audio.toggle_mute()
+
+        elif intent is Intent.CYCLE_INSTRUMENT:
+            # M7 owns the timbre bank; the chosen preset name stays in the model
+            # so the HUD and tests can read it back without touching the mixer.
+            self.settings.instrument = self.audio.cycle_instrument()
+            self.audio.play("preview")
 
         elif intent is Intent.FOCUS_LOST:
             if self.state is RunState.PLAYING:

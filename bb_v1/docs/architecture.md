@@ -22,6 +22,7 @@
 | R7 | 被击中的砖块「渐隐」 | 砖块进入 `FADING` 状态：立即失去碰撞、视觉淡出后移除 |
 | R8 | 球落下未被挡板接住 → 失败 | 失落一次生命；生命耗尽 → `GAME_OVER`，R 重开 / Q 退出 |
 | R9 | （扩展）计分与关卡推进 | 命中计分、连击倍率、清关奖励、逐关加速 |
+| R10 | （扩展）音色切换 | T 键在多种程序化乐器音色间循环；音高/节奏不变，只改变音色 |
 
 ---
 
@@ -33,7 +34,7 @@
  1  启动：python brick_breaker.py
  2  M11 App 初始化：pygame.mixer.pre_init → pygame.init → 估算适配桌面的窗口尺寸
  3  M11 App：创建 RESIZABLE 窗口、图标、Clock
- 4  M7  Audio：合成音效（失败则静默降级，不阻塞启动）
+ 4  M7  Audio：合成默认音色音效（失败则静默降级，不阻塞启动；其余音色按需懒合成并缓存）
  5  M2  Geometry：FieldLayout.compute(w, h, rows) 计算「房间」尺寸、砖块网格、挡板/球尺寸、基础速度
  6  M6  Levels：LevelFactory.build(level=1, layout) 生成砖墙（每块砖 ID/点数/颜色/HP，状态 INTACT）
  7  M10 Session：new_run() → score=0, lives=3, level=1, combo=0, RunState.READY
@@ -41,7 +42,7 @@
  9  M11 App 主循环（固定步长）：
  9a    读取 SDL 事件 → M9 InputController 翻译为 Intent
  9b    App 处理窗口级 Intent（RESIZE / TOGGLE_FULLSCREEN / QUIT）
- 9c    Session 处理游戏级 Intent（PRIMARY / TOGGLE_PAUSE / RESTART / TOGGLE_MUTE / FOCUS_LOST）
+ 9c    Session 处理游戏级 Intent（PRIMARY / TOGGLE_PAUSE / RESTART / TOGGLE_MUTE / CYCLE_INSTRUMENT / FOCUS_LOST）
  9d    以 120 Hz 步长推进 Session.update(dt)（见 1.2）
  9e    M8 Renderer 绘制：背景 → 砖墙（含渐隐）→ 挡板 → 球 → 飘分 → HUD → 浮层
  9f    pygame.display.flip()
@@ -302,6 +303,7 @@ erDiagram
         bool muted
         bool fullscreen
         tuple window_size
+        string instrument
     }
     POPUP {
         float x
@@ -325,7 +327,7 @@ erDiagram
 | COLLISION_EVENT | 一次碰撞的事实记录（瞬时事件） | 单次物理步内产生并消费 | `M4 CollisionEvent`（frozen dataclass，不持久化） |
 | SCORE_ENTRY | 得分明细（审计/飘分来源） | 追加，环形裁剪至最近 64 条 | `M3 ScoreEntry` |
 | RECORD | 本次进程内的最佳成绩 | 进程内单例 | `M3 Record`（由 `RunStats.record` 持有） |
-| SETTINGS | 静音/全屏/窗口尺寸 | 进程内单例 | `M3 Settings` |
+| SETTINGS | 静音/全屏/窗口尺寸/当前音色 | 进程内单例 | `M3 Settings` |
 | POPUP | 飘分视图模型 | 0.8 s 后销毁 | `M3 Popup`（渲染用） |
 
 > 说明：ERD 中的 `LEVEL` 采用「由 `level_no` 参数化」的建模（`rows = min(6 + (n-1)//2, 8)`、
@@ -360,7 +362,7 @@ graph TD
     M8["M8 VIEW<br/>渲染器（只读模型）"] --> M3
     M8 --> M1
     M9["M9 INPUT<br/>事件 → Intent"] --> M1
-    M7["M7 AUDIO<br/>程序化音效"] --> M1
+    M7["M7 AUDIO<br/>程序化音效 + 音色预设"] --> M1
     M1["M1 CONFIG<br/>常量与枚举"]
 ```
 
@@ -377,7 +379,7 @@ graph TD
 | **M4** | PHYSICS | 球-墙/挡板/砖块 的检测与响应；子步推进防穿透；产出碰撞事件 | `CollisionEngine.step()`, `CollisionEvent`, `HitKind` | M2, M3 |
 | **M5** | RULES | 纯策略函数：连击倍率、砖块得分、清关奖励、球速与 rally 倍率 | `ScoringRules.combo_multiplier/brick_points/level_bonus/launch_speed/next_rally_multiplier` | M1 |
 | **M6** | LEVELS | 关卡参数化与砖墙构建/重排 | `LevelFactory.rows_for_level()`, `build()`, `reflow()` | M2, M3 |
-| **M7** | AUDIO | 启动时合成音效；无音频设备时静默降级；静音开关 | `SoundBank.play()`, `toggle_mute()` | M1 |
+| **M7** | AUDIO | 音符表（音高/时长/音量）+ 数据化音色预设 + 纯函数合成器 + SoundBank（懒合成/缓存/播放/静音/切换）；无音频设备时静默降级 | `SoundBank.play()`, `.toggle_mute()`, `.cycle_instrument()`, `.instrument_label`；`render_note()`, `build_wavetable()`, `NOTE_TABLE`, `INSTRUMENT_PRESETS` | M1 |
 | **M8** | VIEW | 背景/HUD/砖墙（含渐隐）/挡板/球/飘分/浮层的绘制；字体与渐变缓存 | `Renderer.draw()`, `invalidate_background()` | M1, M3 |
 | **M9** | INPUT | SDL 事件 → `Intent` 列表；维护按键长按轴（-1/0/+1） | `InputController.handle()`, `.axis`, `.clear()` | M1 |
 | **M10** | SESSION | 运行状态机：状态迁移、事件消费、计分与生命、关卡推进、窗口尺寸变化后的重排 | `GameSession.update() apply() set_move_axis() new_run() resize()` + 只读属性 | M2–M7 |
@@ -407,6 +409,25 @@ graph TD
 
 ---
 
+### 4.5 音效子系统（M7）分层与依赖
+
+音效被刻意拆成「乐谱 / 音色 / 合成 / 播放」四层，依赖方向保持单向
+`M10 → M7 → M1`，`M8` 只读 M7 的展示状态：
+
+| 层 | 符号 | 职责 | 是否有状态 |
+|----|------|------|-----------|
+| 乐谱 | `NOTE_TABLE: Dict[str, SoundNote]` | 16 条音符配方（`start_hz`/`end_hz`/`milliseconds`/`volume`），即 v1.0.0 的音高与节奏；所有音色共用 | 否（常量） |
+| 音色 | `INSTRUMENT_PRESETS: Dict[str, InstrumentPreset]` | 数据化音色：泛音列、攻击/衰减包络、锤击/拨弦瞬态、增益；不含逻辑，新增音色=新增一条数据 | 否（常量） |
+| 合成 | `build_wavetable()` + `render_note()` | 纯函数：`note + preset -> 16-bit PCM`；不依赖 pygame/窗口，可无头单元测试 | 否（纯函数） |
+| 播放 | `SoundBank` | 生命周期与 mixer 初始化、默认音色预合成、其余音色懒合成与缓存、`play(name)`/`toggle_mute()`/`cycle_instrument()`；失败时整体静音降级 | 是（进程内） |
+
+数据流：`M9 (T 键) → Intent.CYCLE_INSTRUMENT → M10 apply() → SoundBank.cycle_instrument()
+→ settings.instrument`；HUD 由 `M8` 读取 `SoundBank.instrument_label` 展示，不反向调用。
+`SINE` 预设走 v1.0.0 的线性包络旧路径，保证默认音色逐位不变；其余预设走
+波表 + 指数包络 + 瞬态噪声。音色切换只改播放层，不影响 M4/M5/M6/M10 的任何规则。
+
+---
+
 ## 5. 可追溯矩阵（Use Case → 模块 → 代码符号）
 
 | 需求 | 模块 | 代码符号 |
@@ -421,6 +442,7 @@ graph TD
 | R8 漏接失败 | M4, M10 | `HitKind.FLOOR`, `GameSession.lose_life()`, `RunState.GAME_OVER` |
 | R8 重开/退出 | M9, M11 | `Intent.RESTART` / `Intent.QUIT`, `App.handle_event()` |
 | R9 计分与关卡 | M5, M6 | `ScoringRules.*`, `LevelFactory.*` |
+| R10 音色切换 | M7, M9, M10, M8 | `NOTE_TABLE`, `INSTRUMENT_PRESETS`, `render_note()`, `SoundBank.cycle_instrument()`, `Intent.CYCLE_INSTRUMENT`, `Renderer._draw_hud()` |
 
 ---
 
@@ -431,6 +453,7 @@ graph TD
 | 新砖块类型（多段血/不可破坏/加命） | M3 `Brick` 增加字段 + M6 构建规则 + M8 配色；M4/M10 无需改动 |
 | 道具掉落 | 新增 `PowerUp` 实体（M3）+ M4 检测 + M10 消费；ERD 增加 `RUN ||--o{ POWERUP` |
 | 成绩持久化 | M3 `Record` 增加读写（`pathlib` 跨平台），M11 启动/退出时调用 |
-| 手柄/鼠标操作 | 只改 M9（新增 Intent 或直接驱动 axis），内层不动 |
+| 新手柄/鼠标操作 | 只改 M9（新增 Intent 或直接驱动 axis），内层不动 |
+| 新增/替换乐器音色 | 只改 M7：`INSTRUMENT_PRESETS` 加一条 `InstrumentPreset`（泛音列/包络/瞬态/增益），自动进入 T 键循环与 HUD |
 | 多球模式 | M3 `Ball` 由 1 个变列表，M10/M4 循环处理；ERD 中 `RUN ||--|{ BALL` |
 | 拆分为多文件包 | 按 M1–M11 直接切成 `bb/config.py … bb/app.py`，依赖方向已保证无环 |

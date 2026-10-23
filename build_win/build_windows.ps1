@@ -299,6 +299,18 @@ if ($null -ne $pathCommand) {
     $makensis = $pathCommand.Source
     Write-Host "Found makensis on PATH: $makensis"
 }
+# Optional portable toolchain kept next to this script (git-ignored).
+$portableCandidates = @(
+    (Join-Path (Join-Path $BuildDir "nsis-win") "nsis-3.09\Bin\makensis.exe"),
+    (Join-Path (Join-Path $BuildDir "nsis-win") "Bin\makensis.exe"),
+    (Join-Path (Join-Path $BuildDir "nsis-win") "makensis.exe")
+)
+foreach ($candidate in $portableCandidates) {
+    if (($null -eq $makensis) -and (Test-Path -LiteralPath $candidate)) {
+        $makensis = $candidate
+        Write-Host "Found portable makensis: $makensis"
+    }
+}
 $programCandidates = @()
 if (${env:ProgramFiles(x86)}) {
     $programCandidates += (Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe")
@@ -313,10 +325,11 @@ foreach ($candidate in $programCandidates) {
     }
 }
 if ($null -eq $makensis) {
-    throw ("NSIS (makensis.exe) was not found on PATH or in the standard install directories.`n" +
+    throw ("NSIS (makensis.exe) was not found on PATH, in build_win\nsis-win, or in the standard install directories.`n" +
            "Install NSIS 3.x with one of:`n" +
            "  winget install NSIS.NSIS`n" +
            "  choco install nsis -y`n" +
+           "  unpack a portable NSIS zip into build_win\nsis-win (see build_win\README.md)`n" +
            "and re-run this script.")
 }
 

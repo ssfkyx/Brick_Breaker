@@ -17,11 +17,13 @@ test sleeps or reads the wall clock.
 
 from __future__ import annotations
 
+import array
 import math
 import os
 import random
 import sys
 import unittest
+from unittest import mock
 
 # Headless SDL: must be configured before Pygame (or the game module) initialise
 # any subsystem, and before any import of `pygame` happens below.
@@ -316,6 +318,161 @@ class AppTests(HeadlessPygameTestCase):
         self.assertEqual(app.screen.get_size(), (400, 300))
         app.draw()
         pygame.display.flip()
+
+
+# ---------------------------------------------------------------------------
+# M7 AUDIO: note table, instrument presets, synthesis and switching
+# ---------------------------------------------------------------------------
+
+class AudioNoteTableTests(HeadlessPygameTestCase):
+    def test_note_table_and_presets_are_consistent(self) -> None:
+        """Every gameplay cue has a note, and every preset covers the whole score."""
+        expected = {f"brick{index}" for index in range(bb.BRICK_TONES)} | {
+            "paddle", "wall", "crack", "launch", "life_lost", "level_clear",
+            "game_over", "preview",
+        }
+        self.assertEqual(set(bb.NOTE_TABLE), expected)
+
+        for name, note in bb.NOTE_TABLE.items():
+            self.assertGreater(note.start_hz, 0.0, name)
+            self.assertGreater(note.end_hz, 0.0, name)
+            self.assertGreater(note.milliseconds, 0, name)
+            self.assertGreater(note.volume, 0.0, name)
+            self.assertLessEqual(note.volume, 1.0, name)
+
+        # SINE stays the default and the first stop of the T-key cycle.
+        self.assertEqual(bb.DEFAULT_INSTRUMENT, "SINE")
+        self.assertEqual(list(bb.INSTRUMENT_PRESETS)[0], bb.DEFAULT_INSTRUMENT)
+        self.assertGreaterEqual(len(bb.INSTRUMENT_PRESETS), 4)
+
+        labels = []
+        for preset in bb.INSTRUMENT_PRESETS.values():
+            self.assertTrue(preset.partials, preset.key)
+            self.assertGreater(preset.gain, 0.0, preset.key)
+            self.assertTrue(0.0 <= preset.noise <= 1.0, preset.key)
+            labels.append(preset.label)
+        self.assertEqual(len(set(labels)), len(labels))
+        for label in labels:
+            self.assertLessEqual(len(label), 12)
+
+    def test_all_presets_use_the_same_note_durations(self) -> None:
+        """Timbre changes must never change the musical timing of a cue."""
+        note = bb.NOTE_TABLE["level_clear"]
+        rate = 44100
+        frames = int(rate * note.milliseconds / 1000.0)
+        for key, preset in bb.INSTRUMENT_PRESETS.items():
+            table = bb.build_wavetable(preset.partials)
+            samples = bb.render_note(note, preset, table, rate, 1)
+            self.assertEqual(len(samples), frames, key)
+
+
+class SynthesisTests(HeadlessPygameTestCase):
+    def test_sine_preset_keeps_the_v1_voice(self) -> None:
+        """SINE must stay the exact v1.0.0 waveform (only new presets alter sound)."""
+        rate = 44100
+        note = bb.NOTE_TABLE["game_over"]
+        count = int(rate * note.milliseconds / 1000.0)
+        amplitude = 32767.0 * note.volume
+        legacy = array.array("h", bytes(2 * count))
+        phase = 0.0
+        for index in range(count):
+            progress = index / count
+            hz = note.start_hz + (note.end_hz - note.start_hz) * progress
+            phase += 2.0 * math.pi * hz / rate
+            legacy[index] = int(amplitude * (1.0 - progress) * math.sin(phase))
+
+        rendered = bb.render_note(
+            note, bb.INSTRUMENT_PRESETS["SINE"], [], rate, 1
+        )
+        self.assertEqual(rendered, legacy)
+
+    def test_acoustic_presets_render_distinct_bounded_pcm(self) -> None:
+        """Each acoustic preset produces different, in-range 16-bit PCM."""
+        rate = 44100
+        note = bb.NOTE_TABLE["brick3"]
+        sine = bb.render_note(note, bb.INSTRUMENT_PRESETS["SINE"], [], rate, 1)
+        rendered = {}
+        for key in ("PIANO", "CLASSICAL", "ACOUSTIC"):
+            preset = bb.INSTRUMENT_PRESETS[key]
+            table = bb.build_wavetable(preset.partials)
+            data = bb.render_note(note, preset, table, rate, 1)
+            rendered[key] = bytes(data)
+            self.assertEqual(len(data), len(sine), key)
+            self.assertNotEqual(bytes(data), bytes(sine), key)
+            self.assertLessEqual(max(abs(value) for value in data), 32767, key)
+            self.assertGreater(max(abs(value) for value in data), 1000, key)
+        self.assertEqual(len(set(rendered.values())), 3)
+
+    def test_stereo_output_repeats_each_sample(self) -> None:
+        """The mixer format may be mono or stereo; channels must stay in sync."""
+        note = bb.NOTE_TABLE["wall"]
+        preset = bb.INSTRUMENT_PRESETS["PIANO"]
+        table = bb.build_wavetable(preset.partials)
+        data = bb.render_note(note, preset, table, 44100, 2)
+        self.assertEqual(len(data) % 2, 0)
+        self.assertEqual(list(data[0::2]), list(data[1::2]))
+
+
+class SoundBankTests(HeadlessPygameTestCase):
+    def test_bank_cycles_all_presets_and_keeps_durations(self) -> None:
+        bank = bb.SoundBank()
+        self.assertTrue(bank.enabled)
+        self.assertEqual(bank.instrument, bb.DEFAULT_INSTRUMENT)
+        self.assertEqual(set(bank.sounds), set(bb.NOTE_TABLE))
+
+        baseline = bank.sounds["wall"].get_length()
+        seen = [bank.instrument]
+        for _ in range(len(bb.INSTRUMENT_PRESETS)):
+            bank.cycle_instrument()
+            seen.append(bank.instrument)
+            self.assertEqual(set(bank.sounds), set(bb.NOTE_TABLE))
+            self.assertAlmostEqual(
+                bank.sounds["wall"].get_length(), baseline, places=2
+            )
+
+        self.assertEqual(seen[0], seen[-1])              # the cycle wraps
+        self.assertEqual(len(set(seen)), len(bb.INSTRUMENT_PRESETS))
+
+        # Muting and playing must stay safe after a switch.
+        self.assertTrue(bank.toggle_mute())
+        bank.play("wall")
+        self.assertFalse(bank.toggle_mute())
+
+    def test_bank_degrades_to_silence_without_a_mixer(self) -> None:
+        """No audio device: the game keeps running, selection still updates."""
+        with mock.patch("pygame.mixer.get_init", return_value=None), mock.patch(
+            "pygame.mixer.init", side_effect=pygame.error("no audio device")
+        ):
+            bank = bb.SoundBank()
+        self.assertFalse(bank.enabled)
+        self.assertEqual(bank.instrument, bb.DEFAULT_INSTRUMENT)
+        bank.cycle_instrument()
+        self.assertEqual(bank.instrument, "PIANO")
+        self.assertEqual(bank.instrument_label, "PIANO")
+        bank.play("wall")                                # must not raise
+        self.assertTrue(bank.toggle_mute())              # mute still works
+        bank.play("wall")
+        self.assertFalse(bank.toggle_mute())
+
+
+class AudioIntentTests(HeadlessPygameTestCase):
+    def test_cycle_intent_updates_the_model_and_the_bank(self) -> None:
+        session = bb.GameSession(480, 360)
+        self.assertEqual(session.settings.instrument, bb.DEFAULT_INSTRUMENT)
+
+        session.apply(bb.Intent.CYCLE_INSTRUMENT)
+        self.assertEqual(session.settings.instrument, "PIANO")
+        self.assertEqual(session.audio.instrument, "PIANO")
+
+        for _ in range(len(bb.INSTRUMENT_PRESETS) - 1):
+            session.apply(bb.Intent.CYCLE_INSTRUMENT)
+        self.assertEqual(session.settings.instrument, bb.DEFAULT_INSTRUMENT)
+
+    def test_t_key_is_mapped_to_cycle_instrument(self) -> None:
+        self.assertIs(
+            bb.InputController.KEY_INTENTS[pygame.K_t],
+            bb.Intent.CYCLE_INSTRUMENT,
+        )
 
 
 if __name__ == "__main__":

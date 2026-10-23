@@ -27,13 +27,15 @@ build_win/
 │       ├── python.exe, pythonw.exe, python312.dll, python312.zip, ...
 │       ├── python312._pth    # patched: python312.zip | . | Lib\site-packages | import site
 │       └── Lib/site-packages/pygame/...
-└── nsis/                     # local NSIS toolchain files (git-ignored)
+└── nsis-win/                 # optional portable NSIS 3.09 toolchain (git-ignored)
 ```
 
 On first launch the exe extracts `payload/app/*` to
 `%LOCALAPPDATA%\BrickBreaker\app` and `payload/python/*` to
-`%LOCALAPPDATA%\BrickBreaker\python`, writes a `ready_v1.0.0.flag`, and starts
+`%LOCALAPPDATA%\BrickBreaker\python`, writes a `ready_v1.1.0.flag`, and starts
 `pythonw.exe app\launcher.pyw`. Later launches execute the cached copy directly.
+Bump `READY_FLAG` in `BrickBreaker.nsi` whenever the payload changes, otherwise
+machines with an older cache keep running the old game code.
 
 ## Pinned inputs
 
@@ -54,13 +56,28 @@ Prerequisites:
 
 - 64-bit Windows 10/11;
 - PowerShell 5.1+ (or PowerShell 7);
-- NSIS 3.x with `makensis.exe` on `PATH` or in the standard install directories
+- NSIS 3.x with `makensis.exe` on `PATH`, in `build_win\nsis-win\`
+  (portable, see below), or in the standard install directories
   (`C:\Program Files (x86)\NSIS` or `C:\Program Files\NSIS`);
 - Python 3.12 on `PATH` only if the pygame-ce wheel is not cached yet.
 
 ```powershell
 pwsh -File build_win\build_windows.ps1
 ```
+
+### Portable NSIS toolchain (no admin needed)
+
+The Windows build in this repository was produced with the portable NSIS 3.09
+package, unpacked to `build_win\nsis-win\` (git-ignored) and detected
+automatically by the script. That package ships **x86 stubs only**, which is why
+`BrickBreaker.nsi` uses `Target x86-unicode`; the embedded Python/pygame payload
+is still 64-bit, so the game itself only runs on 64-bit Windows.
+
+| Component | Version | Source | SHA256 |
+| --- | --- | --- | --- |
+| NSIS portable (`nsis-3.09.zip`) | 3.09 | <https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.9/nsis-3.09.zip> | `F5DC52EEF1F3884230520199BAC6F36B82D643D86B003CE51BD24B05C6BA7C91` |
+
+Unpack it so that `build_win\nsis-win\nsis-3.09\Bin\makensis.exe` exists.
 
 The script:
 
@@ -89,7 +106,7 @@ makensis BrickBreaker.nsi
 
 ## Build with GitHub Actions
 
-Pushing a tag such as `v1.0.0` runs
+Pushing a tag such as `v1.1.0` runs
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) on a
 GitHub-hosted `windows-latest` runner. The workflow downloads and verifies the
 same pinned inputs, runs the headless test suite, rebuilds the exe, uploads it as
@@ -108,11 +125,13 @@ is its end-to-end test.
 
 `windows_release/BrickBreaker.exe` (~13 MB) is committed on purpose, so users can
 clone or download the repository and double-click the game without installing
-Python. The binary is marked `binary -diff` in `.gitattributes`; rebuild it with
-this directory's script whenever the game source changes.
+Python. The current committed build is **v1.1.0** (selectable instrument
+presets). The binary is marked `binary -diff` in `.gitattributes`; rebuild it
+with this directory's script whenever the game source changes.
 `windows_release/*.zip` and `windows_release/SHA256SUMS.txt` are produced only by
 the release workflow and are git-ignored.
 
 The exe is not code-signed: Windows SmartScreen may show a warning (choose
 **More info → Run anyway** if you trust the build), and some antivirus products
 flag unsigned self-extracting Python executables.
+

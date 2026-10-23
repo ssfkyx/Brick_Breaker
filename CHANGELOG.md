@@ -7,6 +7,41 @@ Version numbers before 1.0.0 are retrospective labels for the dated milestones.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-23
+
+### Added
+
+- Selectable instrument timbres: `T` cycles `SINE` (the original v1.0.0 voice),
+  `PIANO`, `CLASSICAL` (nylon-string guitar) and `ACOUSTIC` (steel-string
+  guitar); the HUD shows the active preset as `SND <label>` and the READY
+  overlay lists the new key.
+- Data-driven audio architecture in M7: an instrument-independent `NOTE_TABLE`
+  (same pitches/durations/volumes as v1.0.0), frozen `SoundNote` /
+  `InstrumentPreset` dataclasses, a pure `build_wavetable()` / `render_note()`
+  synthesiser (harmonic spectrum + attack transient + exponential envelope
+  tails), and a `SoundBank` that lazily synthesises and caches each preset.
+- A short `preview` cue that auditions the newly selected instrument.
+- Nine headless audio tests: note/preset consistency, SINE bit-identical to the
+  v1.0.0 formula, distinct bounded PCM per acoustic preset, stereo channel
+  interleaving, lazy preset switching with stable cue durations, no-mixer
+  degradation, `Intent.CYCLE_INSTRUMENT` model/bank sync, and the `T` key
+  mapping (17 tests total).
+- `bb_v1/docs/architecture.md`: R10 traceability, audio-subsystem layering and
+  dependency section, updated M7 contract and SETTINGS ERD.
+
+### Changed
+
+- README (English and Chinese): sound section, `T` in the controls table, audio
+  tests in the test description, and refreshed verification notes.
+- `windows_release/BrickBreaker.exe` rebuilt as v1.1.0 so the double-click build
+  contains the new sound engine: version metadata 1.1.0, cache flag
+  `ready_v1.1.0.flag`, and the NSIS target switched to `x86-unicode` so the
+  portable x86-only NSIS toolchain can reproduce it locally (the embedded Python
+  payload stays 64-bit).
+- `windows_release/启动游戏.bat` now launches the already-unpacked runtime
+  directly when the v1.1.0 cache is present; this is faster and also avoids
+  Windows TEMP problems that can make the NSIS self-extractor fail.
+
 ## [1.0.0] - 2026-10-23
 
 ### Added

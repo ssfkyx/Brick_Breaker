@@ -6,6 +6,19 @@ title Brick Breaker
 rem Always work relative to this file, even when launched from a shortcut.
 cd /d "%~dp0"
 
+rem Fast path: if the self-extractor already unpacked this exact version of the
+rem runtime, launch the game directly. This is faster and also bypasses Windows
+rem TEMP problems that can make the NSIS self-extractor show
+rem "Error writing temporary file. Make sure your temp folder is valid."
+if exist "%LOCALAPPDATA%\BrickBreaker\ready_v1.1.0.flag" (
+    if exist "%LOCALAPPDATA%\BrickBreaker\python\pythonw.exe" (
+        if exist "%LOCALAPPDATA%\BrickBreaker\app\launcher.pyw" (
+            start "" "%LOCALAPPDATA%\BrickBreaker\python\pythonw.exe" "%LOCALAPPDATA%\BrickBreaker\app\launcher.pyw"
+            exit /b 0
+        )
+    )
+)
+
 if exist "%~dp0BrickBreaker.exe" (
     start "" "%~dp0BrickBreaker.exe"
     exit /b 0

@@ -19,6 +19,7 @@ htmlcov/
 # Local build inputs and generated runtime for the Windows exe
 build_win/downloads/
 build_win/nsis/
+build_win/nsis-win/
 build_win/payload/python/
 build_win/payload/app/brick_breaker.py
 
