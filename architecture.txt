@@ -1,0 +1,2 @@
+1. USE CASE
+A game with ball, board and bricks; User can move the board, the ball will initially  

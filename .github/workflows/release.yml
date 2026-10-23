@@ -1,0 +1,212 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PINNED_PYTHON_VERSION: "3.12.10"
+  PINNED_PYGAME_VERSION: "2.5.8"
+  PYTHON_EMBED_SHA256: "4ACBED6DD1C744B0376E3B1CF57CE906F9DC9E95E68824584C8099A63025A3C3"
+
+jobs:
+  windows-release:
+    name: Build the Windows executable
+    runs-on: windows-latest
+
+    env:
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify the source before building
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed with exit code $LASTEXITCODE." }
+          python -m pip install "pygame-ce==$env:PINNED_PYGAME_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw "pygame-ce install failed with exit code $LASTEXITCODE." }
+          python -m compileall -q bb_v1
+          if ($LASTEXITCODE -ne 0) { throw "compileall failed with exit code $LASTEXITCODE." }
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { throw "The headless test suite failed with exit code $LASTEXITCODE." }
+
+      - name: Download the embeddable Python runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = $env:PINNED_PYTHON_VERSION
+          $url = "https://www.python.org/ftp/python/$version/python-$version-embed-amd64.zip"
+          $target = "build_win/downloads/python-embed.zip"
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $target
+          $hash = (Get-FileHash -Algorithm SHA256 -Path $target).Hash.ToUpperInvariant()
+          Write-Host "python-embed.zip SHA256: $hash"
+          if ($hash -ne $env:PYTHON_EMBED_SHA256) {
+              throw "Unexpected SHA256 for python-embed.zip: expected $env:PYTHON_EMBED_SHA256, got $hash."
+          }
+
+      - name: Expand the runtime and patch python312._pth
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pythonDir = "build_win/payload/python"
+          if (Test-Path $pythonDir) { Remove-Item -Recurse -Force $pythonDir }
+          Expand-Archive -Path "build_win/downloads/python-embed.zip" -DestinationPath $pythonDir -Force
+
+          $pth = Join-Path $pythonDir "python312._pth"
+          if (-not (Test-Path $pth)) { throw "python312._pth is missing from the embedded runtime." }
+          $lines = @(Get-Content -Path $pth | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" -and -not $_.StartsWith("#") })
+          $lines = @($lines | Where-Object { $_ -ne "Lib\site-packages" -and $_ -ne "import site" })
+          $lines += @("Lib\site-packages", "import site")
+          Set-Content -Path $pth -Value $lines -Encoding ASCII
+          $patched = @(Get-Content -Path $pth)
+          if (-not ($patched -contains "Lib\site-packages")) { throw "Failed to add Lib\site-packages to python312._pth." }
+          if (-not ($patched -contains "import site")) { throw "Failed to enable 'import site' in python312._pth." }
+          Write-Host "python312._pth:"
+          $patched | ForEach-Object { Write-Host "  $_" }
+
+      - name: Install pygame-ce into the payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sitePackages = "build_win/payload/python/Lib/site-packages"
+          python -m pip install --no-deps --target $sitePackages "pygame-ce==$env:PINNED_PYGAME_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw "pip install into the payload failed with exit code $LASTEXITCODE." }
+          $payloadPython = "build_win/payload/python/python.exe"
+          if (-not (Test-Path $payloadPython)) { throw "The embedded runtime does not contain python.exe." }
+          & $payloadPython -c "import sys, pygame; print('payload Python', sys.version.split()[0]); print('payload pygame-ce', pygame.version.ver)"
+          if ($LASTEXITCODE -ne 0) { throw "The embedded runtime could not import pygame-ce." }
+
+      - name: Copy the game source into the payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not (Test-Path "build_win/payload/app/launcher.pyw")) { throw "build_win/payload/app/launcher.pyw is missing from the checkout." }
+          New-Item -ItemType Directory -Force -Path "build_win/payload/app" | Out-Null
+          Copy-Item -Path "bb_v1/brick_breaker.py" -Destination "build_win/payload/app/brick_breaker.py" -Force
+          $copied = Get-Item "build_win/payload/app/brick_breaker.py"
+          Write-Host ("Copied the game source into the payload ({0:N0} bytes)." -f $copied.Length)
+
+      - name: Build the NSIS executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $candidates = @(
+              "C:\Program Files (x86)\NSIS\makensis.exe",
+              "C:\Program Files\NSIS\makensis.exe"
+          )
+          $fromPath = Get-Command makensis.exe -ErrorAction SilentlyContinue
+          if ($null -ne $fromPath) { $candidates += $fromPath.Source }
+
+          $makensis = $null
+          foreach ($candidate in $candidates) {
+              if ((Test-Path $candidate) -and ($null -eq $makensis)) { $makensis = $candidate }
+          }
+          if ($null -eq $makensis) {
+              Write-Host "NSIS was not found; installing it with Chocolatey."
+              choco install nsis -y --no-progress
+              if ($LASTEXITCODE -ne 0) { throw "choco install nsis failed with exit code $LASTEXITCODE." }
+              foreach ($candidate in $candidates) {
+                  if ((Test-Path $candidate) -and ($null -eq $makensis)) { $makensis = $candidate }
+              }
+              if ($null -eq $makensis) {
+                  $makensis = Get-Command makensis.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
+              }
+          }
+          if ($null -eq $makensis) { throw "makensis.exe is still unavailable; cannot build windows_release/BrickBreaker.exe." }
+          Write-Host "Using $makensis"
+
+          New-Item -ItemType Directory -Force -Path "windows_release" | Out-Null
+          Push-Location "build_win"
+          try {
+              & $makensis "BrickBreaker.nsi"
+              if ($LASTEXITCODE -ne 0) { throw "makensis failed with exit code $LASTEXITCODE." }
+          } finally {
+              Pop-Location
+          }
+
+          $exe = "windows_release/BrickBreaker.exe"
+          if (-not (Test-Path $exe)) { throw "The build finished but $exe was not produced." }
+          $item = Get-Item $exe
+          Write-Host ("Built {0} ({1:N0} bytes)" -f $item.FullName, $item.Length)
+          Write-Host ("SHA256 {0}" -f (Get-FileHash -Algorithm SHA256 -Path $exe).Hash)
+
+      - name: Upload the Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrickBreaker-windows-x64
+          path: windows_release/BrickBreaker.exe
+          if-no-files-found: error
+
+      - name: Package the release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = $env:GITHUB_REF_NAME
+          $staging = "windows_release/package"
+          if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
+          New-Item -ItemType Directory -Path $staging | Out-Null
+
+          Copy-Item -Path "windows_release/BrickBreaker.exe" -Destination $staging -Force
+          Get-ChildItem -Path "windows_release" -Filter "*.bat" -File | Copy-Item -Destination $staging -Force
+
+          $readme = @(
+              "Brick Breaker $version - Windows 64-bit",
+              "================================================",
+              "",
+              "1. Extract this folder anywhere.",
+              "2. Double-click BrickBreaker.exe.",
+              "",
+              "No Python installation is required. The executable bundles its own",
+              "runtime and unpacks it to %LOCALAPPDATA%\BrickBreaker on first launch;",
+              "later launches start immediately.",
+              "",
+              "The executable is not code-signed, so Windows SmartScreen may show a",
+              "warning: choose 'More info' -> 'Run anyway' if you trust this build.",
+              "",
+              "The game source is MIT-licensed. See the repository LICENSE file and",
+              "the bundled Python / pygame-ce upstream licenses."
+          )
+          Set-Content -Path (Join-Path $staging "README.txt") -Value $readme -Encoding UTF8
+
+          $zipName = "BrickBreaker-$version-windows-x64.zip"
+          $zipPath = Join-Path "windows_release" $zipName
+          Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $zipPath -Force
+          Write-Host ("Packaged {0} ({1:N0} bytes)" -f $zipName, (Get-Item $zipPath).Length)
+
+          $files = @("windows_release/BrickBreaker.exe", $zipPath)
+          $sums = foreach ($file in $files) {
+              $hash = (Get-FileHash -Algorithm SHA256 -Path $file).Hash.ToLowerInvariant()
+              "$hash  $(Split-Path -Path $file -Leaf)"
+          }
+          Set-Content -Path "windows_release/SHA256SUMS.txt" -Value $sums -Encoding ASCII
+          Get-Content -Path "windows_release/SHA256SUMS.txt" | ForEach-Object { Write-Host $_ }
+
+      - name: Publish the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            windows_release/BrickBreaker.exe
+            windows_release/BrickBreaker-${{ github.ref_name }}-windows-x64.zip
+            windows_release/SHA256SUMS.txt

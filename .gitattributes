@@ -1,0 +1,27 @@
+# Normalise line endings in the repository so the sources are identical on
+# every platform; concrete types below override this default.
+* text=auto
+
+# Python source and plain-text project files: LF everywhere.
+*.py    text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.nsi   text eol=lf
+*.ps1   text eol=lf
+
+# Windows batch files are executed by cmd.exe: keep CRLF.
+*.bat   text eol=crlf
+
+# Binary assets: never convert, never merge as text.
+*.png   binary
+*.ico   binary
+*.exe   binary
+*.zip   binary
+*.whl   binary
+
+# The committed Windows release is a build artifact: keep it out of diffs and
+# treat it as binary even if the extension rule above is ever narrowed.
+windows_release/BrickBreaker.exe binary -diff
