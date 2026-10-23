@@ -6,9 +6,23 @@
 Windows 10/11 与 Linux（含 WSLg）上运行；仓库同时提供一个自带运行时的 Windows
 可执行文件，机器上无需安装 Python。
 
+> **新增：网页版。** 零依赖浏览器版在 [`web/`](web/README.zh-CN.md)：霓虹街机视觉、
+> Web Audio 实时乐器音色、连击 DJ 灯光秀、触控与本地持久化。直接打开
+> `web/index.html` 即可玩，也可以用自带的 GitHub Pages workflow 发布 —— 不需要
+> Python，也不需要构建。
+
 ![游戏截图](bb_v1/docs/screenshot.png)
 
 ## 快速开始
+
+### 网页版（无需 Python、无需构建）
+
+1. 用现代浏览器打开 [`web/index.html`](web/index.html)（直接双击即可）；或
+2. 用静态服务器托管 `web/`，并通过
+   [`.github/workflows/web-pages.yml`](.github/workflows/web-pages.yml) 发布到
+   GitHub Pages。
+
+操作、音色、持久化和架构说明见 [`web/README.zh-CN.md`](web/README.zh-CN.md)。
 
 ### Windows（预编译，64 位，无需 Python）
 
@@ -115,6 +129,7 @@ GitHub Actions 在 Windows 上自动重新构建并发布 Release（exe + zip �
 
 - `bb_v1/brick_breaker.py` — 全部游戏源码（单文件，M1–M11 模块标记）。
 - `bb_v1/docs/architecture.md` — 架构、状态图与 ERD。
+- `web/` — 零构建网页版（霓虹街机视觉、Web Audio 音色、连击灯光秀、触控、持久化）。
 - `tests/` — 无头测试套件。
 - `build_win/` — Windows 打包脚本与固定版本的构建输入。
 - `windows_release/` — 预编译 exe 与启动器。

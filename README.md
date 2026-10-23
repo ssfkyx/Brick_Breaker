@@ -6,6 +6,12 @@ A complete brick breaker game written in a single Python file with Pygame. The
 same source runs on Windows 10/11 and Linux, including WSL with WSLg. A
 self-contained Windows executable is included for machines without Python.
 
+> **New: web edition.** A zero-dependency browser rebuild lives in
+> [`web/`](web/README.md): neon-arcade visuals, Web Audio instrument timbres,
+> a DJ-style combo light show, touch controls and local persistence. Open
+> `web/index.html` directly or publish it with the included GitHub Pages
+> workflow — no Python, no build step.
+
 ![Brick Breaker gameplay](bb_v1/docs/screenshot.png)
 
 ## Features
@@ -28,6 +34,16 @@ self-contained Windows executable is included for machines without Python.
 - **MIT licensed** — see [`LICENSE`](LICENSE).
 
 ## Quick start
+
+### Web (no Python, no build)
+
+1. Open [`web/index.html`](web/index.html) in a modern browser (double-click is
+   enough), or
+2. Serve the `web/` folder and publish it to GitHub Pages with
+   [`.github/workflows/web-pages.yml`](.github/workflows/web-pages.yml).
+
+See [`web/README.md`](web/README.md) for controls, sound, persistence and the
+architecture of the web build.
 
 ### Windows (prebuilt, 64-bit, no Python required)
 
@@ -148,6 +164,12 @@ not persisted to disk.
 │       └── prompt.md           # dated v1 prompt and review notes
 ├── bb_v2/
 │   └── README.md               # reserved for a future rewrite
+├── web/                        # zero-build browser edition (neon arcade)
+│   ├── index.html              # open directly in any modern browser
+│   ├── js/ · css/ · assets/    # classic scripts, styling, icon
+│   ├── tests/                  # 35 Node tests + headless Chrome checker
+│   ├── docs/screenshots/       # web screenshots
+│   └── README.md · ARCHITECTURE.md
 ├── build_win/
 │   ├── BrickBreaker.nsi        # NSIS build script for the Windows exe
 │   ├── build_windows.ps1       # reproducible local build (pinned, SHA256-verified inputs)
@@ -323,6 +345,11 @@ also flag unsigned self-extracting Python executables.
   games.
 - The Windows build inputs are pinned and SHA256-verified by both
   `build_win/build_windows.ps1` and the release workflow.
+- The web edition is covered by 35 zero-dependency Node tests
+  (`web/tests/core.test.mjs`) and was verified in headless Chrome at
+  1440×900@2× and 390×844@2× DPR: no console errors, no layout overflow, correct
+  canvas backing size, keyboard/touch input, audio-context unlock and
+  `localStorage` persistence across reloads.
 - `bb_v2/` is reserved for a future rewrite and is intentionally empty apart from
   its [`README.md`](bb_v2/README.md).
 
@@ -347,6 +374,11 @@ Known milestones:
   data-driven instrument presets, wavetable synthesis with attack transients,
   lazy per-preset synthesis and caching, `T` key to cycle SINE / PIANO /
   CLASSICAL / ACOUSTIC, HUD label, and 9 new headless audio tests.
+- **2026-10-24** — web edition (`web/`): zero-build browser port with a neon
+  arcade redesign, Web Audio instrument presets, DJ-style combo light show,
+  touch controls, `localStorage` persistence, 35 Node tests, a headless browser
+  checker, and a GitHub Pages deployment workflow. The desktop build is
+  unchanged.
 
 ## Contributing
 

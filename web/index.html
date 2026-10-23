@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#05060f">
+  <meta name="description" content="Brick Breaker — a neon arcade brick breaker with procedural instrument sounds, playable in any browser.">
+  <title>Brick Breaker · Neon Arcade</title>
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <!-- ┌────────────── HUD (DOM, crisp at any DPR) ──────────────┐ -->
+    <header class="hud">
+      <div class="brand" aria-label="Brick Breaker">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">BRICK<span class="brand-name-accent">BREAKER</span></span>
+        <span class="brand-tag">WEB</span>
+      </div>
+
+      <div class="hud-stats">
+        <div class="stat">
+          <span class="stat-label">SCORE</span>
+          <span class="stat-value" id="hudScore">0</span>
+        </div>
+        <div class="stat stat-best">
+          <span class="stat-label">BEST</span>
+          <span class="stat-value" id="hudBest">0</span>
+        </div>
+        <div class="stat stat-level">
+          <span class="stat-label">LEVEL</span>
+          <span class="stat-value" id="hudLevel">1</span>
+        </div>
+        <div class="stat stat-lives">
+          <span class="stat-label">LIVES</span>
+          <span class="stat-value" id="hudLives" aria-label="3 lives"></span>
+        </div>
+      </div>
+
+      <div class="hud-actions">
+        <button class="icon-btn" id="btnMute" type="button" title="Mute / unmute (M)" aria-label="Mute / unmute">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
+        </button>
+        <button class="icon-btn" id="btnPause" type="button" title="Pause / resume (P)" aria-label="Pause / resume">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
+        </button>
+        <button class="icon-btn" id="btnSettings" type="button" title="Sound settings (T)" aria-label="Sound settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm8.4 4a8.5 8.5 0 0 0-.1-1.3l2-1.6-2-3.4-2.4 1a8 8 0 0 0-2.2-1.3L15.3 3h-4l-.4 2.4a8 8 0 0 0-2.2 1.3l-2.4-1-2 3.4 2 1.6a8.5 8.5 0 0 0 0 2.6l-2 1.6 2 3.4 2.4-1a8 8 0 0 0 2.2 1.3l.4 2.4h4l.4-2.4a8 8 0 0 0 2.2-1.3l2.4 1 2-3.4-2-1.6c.06-.43.1-.86.1-1.3z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- ┌────────────── Playfield ──────────────┐ -->
+    <main class="stage" id="stage">
+      <canvas id="game" role="img" aria-label="Brick Breaker playfield. Use left and right arrows to move, space to launch."></canvas>
+
+      <!-- floating in-canvas status chips -->
+      <div class="stage-chips">
+        <div class="chip chip-sound" id="chipSound" title="Current instrument (T to cycle)">
+          <span class="chip-dot"></span><span id="chipSoundText">SINE</span>
+        </div>
+        <div class="chip chip-combo" id="chipCombo" aria-hidden="true">
+          <span class="combo-label">COMBO</span>
+          <span class="combo-x">×<b id="chipComboValue">1</b></span>
+          <span class="combo-eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        </div>
+      </div>
+
+      <!-- ───────────── DOM overlays (menus / pause / game over) ───────────── -->
+      <div class="overlay" id="overlay" hidden>
+        <!-- title -->
+        <section class="panel panel-title" id="panelTitle" hidden>
+          <p class="eyebrow">NEON ARCADE · 2026</p>
+          <h1 class="title">BRICK<br><span>BREAKER</span></h1>
+          <p class="tagline">Break the wall. Ride the combo. Let the bricks dance.</p>
+          <button class="btn btn-primary" id="btnPlay" type="button">
+            <span class="btn-glow"></span>START THE SET
+          </button>
+          <dl class="title-specs">
+            <div><dt>SCORE</dt><dd id="titleBest">0</dd></div>
+            <div><dt>BEST COMBO</dt><dd id="titleBestCombo">0</dd></div>
+            <div><dt>INSTRUMENT</dt><dd id="titleInstrument">SINE</dd></div>
+          </dl>
+          <p class="hint">Keyboard: <kbd>←</kbd><kbd>→</kbd> move · <kbd>Space</kbd> launch · <kbd>T</kbd> sound<br>
+            <kbd>P</kbd> pause · <kbd>F</kbd> fullscreen · Touch: drag to move · tap to launch</p>
+        </section>
+
+        <!-- ready after losing a life -->
+        <section class="panel panel-ready" id="panelReady" hidden>
+          <p class="eyebrow">BALL LOST</p>
+          <h2 class="panel-title" id="readyLives">TAP OR PRESS SPACE TO LAUNCH</h2>
+          <p class="hint">Move the paddle with the arrow keys or by dragging.</p>
+        </section>
+
+        <!-- pause -->
+        <section class="panel panel-pause" id="panelPause" hidden>
+          <p class="eyebrow">SET PAUSED</p>
+          <h2 class="panel-title">TAKE A BREATH</h2>
+          <div class="panel-actions">
+            <button class="btn btn-primary" id="btnResume" type="button">RESUME</button>
+            <button class="btn" id="btnPauseRestart" type="button">RESTART</button>
+          </div>
+          <p class="hint"><kbd>P</kbd> resume · <kbd>R</kbd> restart · <kbd>T</kbd> instrument</p>
+        </section>
+
+        <!-- level clear -->
+        <section class="panel panel-level" id="panelLevel" hidden>
+          <p class="eyebrow">SET COMPLETE</p>
+          <h2 class="panel-title" id="levelTitle">LEVEL 1 CLEARED</h2>
+          <p class="level-bonus" id="levelBonus">+250</p>
+        </section>
+
+        <!-- game over -->
+        <section class="panel panel-over" id="panelOver" hidden>
+          <p class="eyebrow">THE SET ENDED</p>
+          <h2 class="panel-title title-danger">GAME OVER</h2>
+          <div class="result-grid">
+            <div><dt>SCORE</dt><dd id="overScore">0</dd></div>
+            <div><dt>BEST</dt><dd id="overBest">0</dd></div>
+            <div><dt>LEVEL</dt><dd id="overLevel">1</dd></div>
+            <div><dt>BEST COMBO</dt><dd id="overCombo">×1</dd></div>
+          </div>
+          <p class="new-record" id="newRecord" hidden>★ NEW PERSONAL BEST ★</p>
+          <div class="panel-actions">
+            <button class="btn btn-primary" id="btnAgain" type="button">RUN IT BACK</button>
+            <button class="btn" id="btnOverMenu" type="button">MENU</button>
+          </div>
+          <p class="hint"><kbd>R</kbd> restart · <kbd>Q</kbd> menu</p>
+        </section>
+      </div>
+
+      <!-- ───────────── settings / sound panel ───────────── -->
+      <div class="overlay overlay-side" id="settingsOverlay" hidden>
+        <section class="panel panel-settings" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+          <header class="panel-head">
+            <div>
+              <p class="eyebrow">SOUND SYSTEM</p>
+              <h2 class="panel-title" id="settingsTitle">DJ BOOTH</h2>
+            </div>
+            <button class="icon-btn" id="btnCloseSettings" type="button" aria-label="Close settings">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg>
+            </button>
+          </header>
+
+          <p class="settings-note">Same notes, same rhythm — four timbres, synthesised live by Web Audio.</p>
+
+          <div class="instrument-grid" id="instrumentGrid" role="radiogroup" aria-label="Instrument timbre">
+            <!-- buttons injected by app.js -->
+          </div>
+
+          <div class="settings-row">
+            <span>Master sound</span>
+            <button class="switch" id="btnSoundToggle" type="button" role="switch" aria-checked="true">
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <div class="settings-row">
+            <span>Combo light show</span>
+            <button class="switch" id="btnFxToggle" type="button" role="switch" aria-checked="true">
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+          <div class="settings-row">
+            <span>Best combo</span>
+            <strong id="settingsBestCombo">×1</strong>
+          </div>
+
+          <div class="panel-actions">
+            <button class="btn btn-primary" id="btnPreview" type="button">PREVIEW SOUND</button>
+            <button class="btn" id="btnFullscreen" type="button">FULLSCREEN</button>
+          </div>
+          <p class="hint">The light show reacts to your combo: the deeper the run, the wilder the wall.</p>
+        </section>
+      </div>
+
+      <!-- toast for small feedback -->
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    </main>
+
+    <!-- ┌────────────── footer hint ──────────────┐ -->
+    <footer class="foot">
+      <span class="foot-keys"><kbd>←</kbd><kbd>→</kbd> move <kbd>Space</kbd> launch <kbd>P</kbd> pause <kbd>M</kbd> mute <kbd>T</kbd> sound <kbd>F</kbd> fullscreen</span>
+      <span class="foot-touch">Drag to move · Tap to launch</span>
+      <span class="foot-brand">v1.0 web · procedurally generated audio</span>
+    </footer>
+  </div>
+
+  <!-- Classic scripts, no bundler: load order is the dependency graph. -->
+  <script src="js/00-config.js"></script>
+  <script src="js/10-model.js"></script>
+  <script src="js/20-rules.js"></script>
+  <script src="js/21-levels.js"></script>
+  <script src="js/22-physics.js"></script>
+  <script src="js/30-audio.js"></script>
+  <script src="js/40-storage.js"></script>
+  <script src="js/50-renderer.js"></script>
+  <script src="js/60-session.js"></script>
+  <script src="js/70-input.js"></script>
+  <script src="js/80-app.js"></script>
+</body>
+</html>

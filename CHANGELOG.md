@@ -7,6 +7,36 @@ Version numbers before 1.0.0 are retrospective labels for the dated milestones.
 
 ## [Unreleased]
 
+### Added
+
+- **Web edition** (`web/`): a zero-dependency, zero-build browser port of the
+  game with the M1–M11 architecture preserved as classic `<script>` modules on a
+  shared `BB` namespace. Runs by opening `web/index.html` and deploys as a static
+  site (GitHub Pages workflow included).
+- New neon-arcade visual system for the web build: DOM HUD and overlays with
+  crisp HiDPI text, a `devicePixelRatio`-aware canvas backing store, responsive
+  layout for desktop and phones, CSS-driven menus and a DJ-booth sound panel.
+- **DJ-style combo light show**: as the combo multiplier climbs, the brick wall
+  shifts hue together, a ripple travels across the columns, bricks glow/brighten
+  on every hit, and a pulsing equalizer floor joins in (render-only, toggleable,
+  reduced-motion aware).
+- Web Audio instrument engine: the same `NOTE_TABLE` score as the desktop build
+  with data-driven `SINE` / `PIANO` / `CLASSICAL` / `ACOUSTIC` presets,
+  oscillator + envelope + transient synthesis, and gesture-based audio unlock.
+- Touch and mouse controls: direct paddle aiming (velocity preserved for the
+  english bounce), tap-to-launch, pause/mute/settings buttons, fullscreen API.
+- `localStorage` persistence for best score/combo/level, instrument, mute and
+  light-show preference.
+- Web test tooling with no npm dependency: 35 `node:test` simulation tests
+  (`web/tests/core.test.mjs`) plus a DevTools-Protocol browser checker
+  (`web/tests/browser-check.mjs`) for layout/DPR/overflow/console-error checks,
+  keyboard/touch input, persistence reload and screenshots.
+- `web/README.md`, `web/README.zh-CN.md`, `web/ARCHITECTURE.md` and
+  `web/tests/README.md`; GitHub Pages workflow
+  (`.github/workflows/web-pages.yml` and a self-contained copy in `web/`).
+- Root README/README.zh-CN now point at the web edition; desktop build and tests
+  are unchanged.
+
 ## [1.1.0] - 2026-10-23
 
 ### Added

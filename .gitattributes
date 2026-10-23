@@ -12,6 +12,12 @@
 *.nsi   text eol=lf
 *.ps1   text eol=lf
 
+# Web edition (zero-build static site).
+*.html  text eol=lf
+*.css   text eol=lf
+*.js    text eol=lf
+*.mjs   text eol=lf
+
 # Windows batch files are executed by cmd.exe: keep CRLF.
 *.bat   text eol=crlf
 
