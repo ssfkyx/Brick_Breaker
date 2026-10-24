@@ -111,7 +111,10 @@ class CDP {
       userGesture: true
     }).then((result) => {
       if (result.exceptionDetails) {
-        throw new Error(result.exceptionDetails.text || 'evaluate failed');
+        const details = result.exceptionDetails;
+        const text = (details.exception && (details.exception.description || details.exception.value)) ||
+          details.text || 'evaluate failed';
+        throw new Error(text);
       }
       return result.result.value;
     });

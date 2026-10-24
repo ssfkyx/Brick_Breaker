@@ -25,8 +25,19 @@ Version numbers before 1.0.0 are retrospective labels for the dated milestones.
   oscillator + envelope + transient synthesis, and gesture-based audio unlock.
 - Touch and mouse controls: direct paddle aiming (velocity preserved for the
   english bounce), tap-to-launch, pause/mute/settings buttons, fullscreen API.
-- `localStorage` persistence for best score/combo/level, instrument, mute and
-  light-show preference.
+- `localStorage` persistence for best score/combo/level, instrument, mute,
+  light-show preference and render-quality mode.
+- **Performance pass for the web build**: the static playfield scenery is cached
+  in an offscreen canvas, bricks are flat-shaded instead of using per-brick
+  gradients + `shadowBlur`, the combo glow is a cached sprite, the HUD/chips no
+  longer use `backdrop-filter` over the animated canvas, and the ambient
+  background is static. The renderer now sizes its backing store from
+  `devicePixelRatio` × an adaptive quality scale: when a device cannot hold
+  ~54 fps the canvas resolution is lowered (never the fixed 120 Hz physics) and
+  recovered when there is headroom. DJ booth exposes AUTO / CRISP / FAST;
+  `?stats=1` shows live FPS/quality/backing size. Headless-Chrome measurements on
+  the dev machine improved from ~10 fps to ~53–58 fps (adaptive) at
+  1440×900@DPR2, and 32 fps → 60 fps at DPR1.
 - Web test tooling with no npm dependency: 35 `node:test` simulation tests
   (`web/tests/core.test.mjs`) plus a DevTools-Protocol browser checker
   (`web/tests/browser-check.mjs`) for layout/DPR/overflow/console-error checks,

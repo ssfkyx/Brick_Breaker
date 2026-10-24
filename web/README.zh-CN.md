@@ -84,11 +84,31 @@ python -m http.server 8080
 灯光秀是纯渲染效果：只读 session，不修改游戏模型。可在 DJ BOOTH 中关闭，
 并尊重系统 `prefers-reduced-motion` 设置。
 
+## 性能与画质
+
+游戏逻辑固定 120 Hz，渲染跟随每一帧动画。为了在高分屏/弱显卡上也顺滑：
+
+- 静态背景（渐变、透视网格、扫描线、暗角）预先画到离屏 canvas，每帧只 blit 一次；
+- 砖块改用纯色填充 + 高光/阴影条，不再每块砖创建渐变和 `shadowBlur`；连击光晕用缓存 sprite；
+- canvas backing store 按 `devicePixelRatio` 设置，并带**自适应分辨率**：帧率掉下来时只降画质、不降物理频率，机器有余量时再升回去；
+- CSS 也做了减负：HUD/芯片不再对动画 canvas 做 `backdrop-filter`，环境背景改为静态。
+
+想检查或手动控制：
+
+| 想做什么 | 怎么做 |
+| --- | --- |
+| 看实时 FPS / 画质 / 分辨率 | 打开 `index.html?stats=1` |
+| 强制最清晰 | **DJ BOOTH → 画质 / Quality → CRISP**，或 `?quality=high` |
+| 强制最流畅 | **DJ BOOTH → Quality → FAST**，或 `?quality=low` |
+| 恢复自动 | **DJ BOOTH → Quality → AUTO**（默认） |
+
+`?quality=high|low` 仅用于临时测试；DJ BOOTH 里的选择会记住。
+
 ## 持久化
 
 `localStorage`（键名 `brick-breaker.web.v1`）会保存：最高分、最高连击、最高关卡、
-当前音色、静音状态、灯光秀开关。注意部分浏览器会隔离 `file://` 的存储；需要
-可靠持久化时用上面的静态服务器方式打开。
+当前音色、静音状态、灯光秀开关和画质模式。注意部分浏览器会隔离 `file://` 的存储；
+需要可靠持久化时用上面的静态服务器方式打开。
 
 ## 目录结构
 
@@ -122,8 +142,10 @@ node tests/browser-check.mjs \
 
 ## 设计说明
 
-- **高分屏**：canvas backing store = CSS 尺寸 × devicePixelRatio（限制 1–4），
+- **高分屏**：canvas backing store = CSS 尺寸 × devicePixelRatio（按性能自适应），
   游戏逻辑仍用 CSS 像素，DOM HUD 文字在任何 DPI 下都清晰。
+- **自适应性能**：设备维持不了约 55 FPS 时只降低 canvas 分辨率（绝不降低物理频率），
+  有余量时自动升回；`?stats=1` 可看实时数值，DJ BOOTH 里可强制 CRISP / FAST。
 - **响应式**：场地尺寸由实时 canvas 尺寸推导；手机竖屏/横屏自动切换紧凑 HUD 与触控提示。
 - **可访问性**：语义化按钮 + ARIA、可见焦点、`prefers-reduced-motion`、全键盘可玩。
 - **隐私**：无网络请求、无统计、无账号，全部在浏览器本地运行。

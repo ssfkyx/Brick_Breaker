@@ -1,13 +1,18 @@
-/* Brick Breaker Web — M8 VIEW (canvas renderer).
+/* Brick Breaker Web — M8 VIEW (canvas renderer, performance-tuned).
  *
  * The playfield is drawn on a canvas whose backing store is sized in device
- * pixels (HiDPI / Retina aware); all game coordinates are CSS pixels, so
- * geometry, collision math and text stay crisp on every screen.
+ * pixels (HiDPI / Retina aware).  Two performance rules keep the frame time
+ * low even on high-DPR screens:
  *
- * Visual signature of the web build: a neon club stage.  On top of the normal
- * (shadow) overlay, the "combo light show" reacts to every brick hit: bricks
- * shift hue as a group, a ripple travels along the columns and the equalizer
- * floor pulses with the combo, so the wall starts dancing like a DJ booth.
+ *   1. Static scenery (gradient, perspective grid, scanlines, vignette) is
+ *      rendered once into an offscreen canvas and blitted per frame.
+ *   2. Bricks are drawn with flat fills + highlight/shade strips instead of
+ *      per-brick gradients and shadowBlur (which are very expensive in Canvas2D);
+ *      the combo light show comes from hue shifts, brightness and a cached
+ *      glow sprite rather than per-brick blurs.
+ *
+ * The renderer is strictly read-only with respect to the game model.  The app
+ * may lower `qualityScale` at runtime (adaptive resolution) via setQualityScale().
  */
 (function (global) {
   'use strict';
@@ -25,11 +30,17 @@
   }
 
   function hsl(hue, saturation, lightness) {
-    return 'hsl(' + ((hue % 360) + 360) % 360 + ' ' + saturation + '% ' + lightness + '%)';
+    var h = ((hue % 360) + 360) % 360;
+    return 'hsl(' + h.toFixed(1) + ' ' + saturation.toFixed(1) + '% ' + lightness.toFixed(1) + '%)';
   }
 
   function roundRectPath(ctx, x, y, w, h, radius) {
     var r = Math.min(radius, w * 0.5, h * 0.5);
+    if (typeof ctx.roundRect === 'function') {
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, r);
+      return;
+    }
     ctx.beginPath();
     ctx.moveTo(x + r, y);
     ctx.arcTo(x + w, y, x + w, y + h, r);
@@ -44,15 +55,25 @@
     this.ctx = canvas.getContext('2d', { alpha: false });
     this.width = 0;
     this.height = 0;
-    this.dpr = 1;
+    this.dpr = 1;               // CSS device pixel ratio
+    this.effectiveDpr = 1;      // dpr * qualityScale (what the backing store uses)
+    this.qualityScale = 1;      // 0.6 .. 1, set by the app's adaptive quality
 
     this.time = 0;
-    this.beat = 0;              // 0..1 pulse after a brick hit
-    this.comboGlow = 0;         // 0..1 extra glow when the multiplier climbs
+    this.beat = 0;
+    this.comboGlow = 0;
     this.shake = 0;
     this.eqPhase = 0;
     this.reducedMotion = false;
     this.fxEnabled = true;
+
+    this._bg = null;
+    this._bgWidth = 0;
+    this._bgHeight = 0;
+    this._glowSprites = {};
+    this._rowHueStrings = null;
+    this._eqHue = null;
+
     try {
       this.reducedMotion = !!(global.matchMedia && global.matchMedia('(prefers-reduced-motion: reduce)').matches);
     } catch (error) { /* ignore */ }
@@ -64,25 +85,37 @@
     this._lastScore = 0;
     this._lastMultiplier = 1;
     this._lastBricksLeft = 0;
-    this._background = null;
     this._shakeX = 0;
     this._shakeY = 0;
   }
 
+  /* ---------------------------------------------------------------------
+   * Sizing / quality
+   * ------------------------------------------------------------------- */
+  Renderer.prototype.setQualityScale = function (scale) {
+    var next = clamp(Number(scale) || 1, 0.6, 1);
+    if (Math.abs(next - this.qualityScale) < 0.01) return;
+    this.qualityScale = next;
+    this._bg = null;
+  };
+
   Renderer.prototype.resize = function (cssWidth, cssHeight, dpr) {
     var width = Math.max(1, Math.round(cssWidth));
     var height = Math.max(1, Math.round(cssHeight));
-    var ratio = clamp(dpr || 1, 1, 4);
+    var deviceRatio = clamp(Number(dpr) || 1, 1, 4);
+    var effective = clamp(deviceRatio * this.qualityScale, 0.75, 2.5);
     this.width = width;
     this.height = height;
-    this.dpr = ratio;
-    this.canvas.width = Math.round(width * ratio);
-    this.canvas.height = Math.round(height * ratio);
+    this.dpr = deviceRatio;
+    this.effectiveDpr = effective;
+    this.canvas.width = Math.round(width * effective);
+    this.canvas.height = Math.round(height * effective);
     this.canvas.style.width = width + 'px';
     this.canvas.style.height = height + 'px';
-    this.ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    this.ctx.setTransform(effective, 0, 0, effective, 0, 0);
     this.ctx.imageSmoothingEnabled = true;
-    this._background = null;
+    this._glowSprites = {};
+    this._buildBackground();
     this._trail.length = 0;
   };
 
@@ -100,27 +133,125 @@
     return Math.min(config.COMBO_MAX, 1 + Math.floor(combo / config.COMBO_STEP));
   };
 
+  /* ---------------------------------------------------------------------
+   * Static background cache
+   * ------------------------------------------------------------------- */
+  Renderer.prototype._buildBackground = function () {
+    if (!this.width || !this.height) return;
+    var canvas = document.createElement('canvas');
+    canvas.width = Math.round(this.width * this.effectiveDpr);
+    canvas.height = Math.round(this.height * this.effectiveDpr);
+    var ctx = canvas.getContext('2d');
+    ctx.scale(this.effectiveDpr, this.effectiveDpr);
+
+    var width = this.width;
+    var height = this.height;
+
+    var gradient = ctx.createLinearGradient(0, 0, 0, height);
+    gradient.addColorStop(0, '#04050d');
+    gradient.addColorStop(0.45, '#080d24');
+    gradient.addColorStop(1, '#140b2e');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+
+    // soft stage lights (static)
+    var topGlow = ctx.createRadialGradient(width * 0.5, height * 0.12, 0, width * 0.5, height * 0.12, Math.max(width, height) * 0.7);
+    topGlow.addColorStop(0, 'rgba(80, 170, 255, 0.12)');
+    topGlow.addColorStop(0.5, 'rgba(120, 70, 220, 0.05)');
+    topGlow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = topGlow;
+    ctx.fillRect(0, 0, width, height);
+
+    // perspective grid floor
+    var horizon = height * 0.62;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(88, 166, 255, 0.08)';
+    ctx.lineWidth = 1;
+    var lines = 9;
+    for (var i = 0; i <= lines; i += 1) {
+      var x = (width / lines) * i;
+      ctx.beginPath();
+      ctx.moveTo(x, height);
+      ctx.lineTo(width * 0.5 + (x - width * 0.5) * 0.12, horizon);
+      ctx.stroke();
+    }
+    for (var row = 1; row <= 7; row += 1) {
+      var t = row / 7;
+      var y = horizon + (height - horizon) * t * t;
+      ctx.globalAlpha = 0.10 * (1 - t * 0.4);
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // scanlines
+    ctx.save();
+    ctx.globalAlpha = 0.05;
+    ctx.fillStyle = '#000';
+    for (var line = 0; line < height; line += 4) {
+      ctx.fillRect(0, line, width, 1);
+    }
+    ctx.restore();
+
+    // vignette
+    var vignette = ctx.createRadialGradient(
+      width * 0.5, height * 0.5, Math.min(width, height) * 0.35,
+      width * 0.5, height * 0.5, Math.max(width, height) * 0.78
+    );
+    vignette.addColorStop(0, 'rgba(0,0,0,0)');
+    vignette.addColorStop(1, 'rgba(0,0,0,0.5)');
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, width, height);
+
+    this._bg = canvas;
+    this._bgWidth = width;
+    this._bgHeight = height;
+  };
+
+  Renderer.prototype._glowSprite = function (hue) {
+    var bucket = Math.round(((hue % 360) + 360) % 360 / 15) * 15 % 360;
+    var cached = this._glowSprites[bucket];
+    if (cached) return cached;
+    var size = 256;
+    var canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    var ctx = canvas.getContext('2d');
+    var gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    gradient.addColorStop(0, 'hsla(' + bucket + ', 95%, 62%, 0.30)');
+    gradient.addColorStop(0.55, 'hsla(' + bucket + ', 95%, 55%, 0.10)');
+    gradient.addColorStop(1, 'hsla(' + bucket + ', 95%, 50%, 0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, size, size);
+    this._glowSprites[bucket] = canvas;
+    return canvas;
+  };
+
+  /* ---------------------------------------------------------------------
+   * Effects sync (render-only; never writes to the session)
+   * ------------------------------------------------------------------- */
   Renderer.prototype._spawnHitEffects = function (popup) {
     if (!this.fxEnabled || this.reducedMotion) return;
     var hue = typeof popup.colorHue === 'number' ? popup.colorHue : 190;
-    var count = 9;
+    var count = 7;
     for (var i = 0; i < count; i += 1) {
       var angle = Math.random() * TAU;
-      var speed = 60 + Math.random() * 210;
+      var speed = 60 + Math.random() * 190;
       this._particles.push({
-        x: popup.x,
-        y: popup.y,
+        x: popup.x, y: popup.y,
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed - 40,
         life: 0,
-        ttl: 0.38 + Math.random() * 0.32,
+        ttl: 0.35 + Math.random() * 0.3,
         hue: hue + (Math.random() * 60 - 30),
-        size: 2 + Math.random() * 3.6
+        size: 2 + Math.random() * 3.2
       });
     }
-    if (this._particles.length > 220) this._particles.splice(0, this._particles.length - 220);
-    this._waves.push({ x: popup.x, y: popup.y, life: 0, ttl: 0.42, hue: hue });
-    if (this._waves.length > 8) this._waves.shift();
+    if (this._particles.length > 140) this._particles.splice(0, this._particles.length - 140);
+    this._waves.push({ x: popup.x, y: popup.y, life: 0, ttl: 0.4, hue: hue });
+    if (this._waves.length > 6) this._waves.shift();
   };
 
   Renderer.prototype.sync = function (session, dt) {
@@ -156,13 +287,10 @@
     }
     this._lastMultiplier = multiplier;
 
-    if (score > this._lastScore || bricksLeft < this._lastBricksLeft) {
-      this.beat = Math.max(this.beat, 0.75);
-    }
+    if (score > this._lastScore || bricksLeft < this._lastBricksLeft) this.beat = Math.max(this.beat, 0.75);
     this._lastScore = score;
     this._lastBricksLeft = bricksLeft;
 
-    // particles
     for (var p = this._particles.length - 1; p >= 0; p -= 1) {
       var particle = this._particles[p];
       particle.life += frame;
@@ -180,114 +308,78 @@
       if (this._waves[w].life >= this._waves[w].ttl) this._waves.splice(w, 1);
     }
 
-    // ball trail
     var ball = session.ball;
     if (ball && ball.state === BB.BallState.IN_FLIGHT) {
-      this._trail.push({ x: ball.x, y: ball.y, life: 0 });
-      if (this._trail.length > 16) this._trail.shift();
+      this._trail.push({ x: ball.x, y: ball.y });
+      if (this._trail.length > 12) this._trail.shift();
     } else if (this._trail.length) {
       this._trail.shift();
     }
-    for (var t = 0; t < this._trail.length; t += 1) this._trail[t].life += frame;
 
     var shakeAmount = this.shake * (this.fxEnabled && !this.reducedMotion ? 1 : 0);
     this._shakeX = (Math.random() * 2 - 1) * shakeAmount;
     this._shakeY = (Math.random() * 2 - 1) * shakeAmount;
+
+    // dynamic stage glow: one cached sprite, one drawImage per frame
+    var heat = clamp((multiplier - 1) / Math.max(1, config.COMBO_MAX - 1), 0, 1);
+    this._glowHue = 190 + heat * 120 + this.beat * 22;
+    this._glowAlpha = 0.10 + heat * 0.16 + this.beat * 0.06;
   };
 
   Renderer.prototype._drawBackground = function (session) {
     var ctx = this.ctx;
-    var width = this.width;
-    var height = this.height;
+    if (this._bg) {
+      ctx.drawImage(this._bg, 0, 0, this._bgWidth, this._bgHeight);
+    } else {
+      ctx.clearRect(0, 0, this.width, this.height);
+    }
+
+    // combo heat glow (cached hue sprite)
+    if (this._glowAlpha > 0.02) {
+      var sprite = this._glowSprite(this._glowHue);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = this._glowAlpha;
+      var scale = Math.max(this.width, this.height) * 1.25;
+      ctx.drawImage(sprite, (this.width - scale) / 2, this.height * 0.12 - scale / 2, scale, scale);
+      ctx.restore();
+    }
+
+    this._drawEqualizer(session);
+  };
+
+  Renderer.prototype._drawEqualizer = function (session) {
     var multiplier = this._comboMultiplier(session);
     var heat = clamp((multiplier - 1) / Math.max(1, config.COMBO_MAX - 1), 0, 1);
-
-    if (!this._background) {
-      var gradient = ctx.createLinearGradient(0, 0, 0, height);
-      gradient.addColorStop(0, '#04050d');
-      gradient.addColorStop(0.45, '#080d24');
-      gradient.addColorStop(1, '#140b2e');
-      this._background = gradient;
+    var ctx = this.ctx;
+    var bars = Math.max(14, Math.min(32, Math.round(this.width / 48)));
+    if (!this._eqHue || this._eqHue.length !== bars) {
+      this._eqHue = [];
+      for (var k = 0; k < bars; k += 1) {
+        this._eqHue.push(style.brickHues[k % style.brickHues.length]);
+      }
     }
-    ctx.fillStyle = this._background;
-    ctx.fillRect(0, 0, width, height);
+    var baseY = this.height * 0.99;
+    var maxBar = this.height * (0.045 + heat * 0.14);
+    var slot = this.width / bars;
+    var barWidth = slot * 0.5;
+    var alphaBase = 0.10 + heat * 0.18 + this.beat * 0.08;
 
-    // stage glow that follows the combo heat
-    var glow = ctx.createRadialGradient(
-      width * 0.5, height * 0.18, 0,
-      width * 0.5, height * 0.18, Math.max(width, height) * 0.72
-    );
-    var glowHue = 190 + heat * 120 + this.beat * 22;
-    glow.addColorStop(0, 'hsla(' + ((glowHue % 360) + 360) % 360 + ', 90%, 58%, 0.18)');
-    glow.addColorStop(0.42, 'hsla(' + (((glowHue + 120) % 360) + 360) % 360 + ', 90%, 55%, 0.07)');
-    glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    ctx.fillStyle = glow;
-    ctx.fillRect(0, 0, width, height);
-
-    // perspective grid floor
-    var horizon = height * 0.62;
     ctx.save();
-    ctx.strokeStyle = 'rgba(88, 166, 255, 0.08)';
-    ctx.lineWidth = 1;
-    var lines = 9;
-    for (var i = 0; i <= lines; i += 1) {
-      var x = (width / lines) * i;
-      ctx.beginPath();
-      ctx.moveTo(x, height);
-      ctx.lineTo(width * 0.5 + (x - width * 0.5) * 0.12, horizon);
-      ctx.stroke();
-    }
-    for (var row = 1; row <= 7; row += 1) {
-      var t = row / 7;
-      var y = horizon + (height - horizon) * t * t;
-      ctx.globalAlpha = 0.10 * (1 - t * 0.4);
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(width, y);
-      ctx.stroke();
-    }
-    ctx.restore();
-
-    // equalizer floor: the "DJ booth" reacting to the combo
-    var bars = Math.max(16, Math.min(40, Math.round(width / 34)));
-    var baseY = height * 0.985;
-    var maxBar = height * (0.05 + heat * 0.16);
-    ctx.save();
+    ctx.globalAlpha = alphaBase;
     for (var b = 0; b < bars; b += 1) {
       var phase = this.eqPhase * (1 + (b % 5) * 0.09) + b * 0.62;
       var wave = Math.abs(Math.sin(phase)) * 0.65 + Math.abs(Math.sin(phase * 2.7 + 1.3)) * 0.35;
-      var amplitude = (0.18 + wave * 0.82) * maxBar * (0.55 + heat * 0.9);
-      amplitude *= 0.7 + this.beat * 0.8;
-      var barWidth = width / bars * 0.52;
-      var barX = (width / bars) * b + (width / bars - barWidth) * 0.5;
-      var hue = (style.brickHues[b % style.brickHues.length] + this.time * (14 + heat * 30)) % 360;
-      var alpha = 0.10 + heat * 0.22 + this.beat * 0.10;
-      ctx.fillStyle = hsl(hue, 90, 60);
-      ctx.globalAlpha = alpha;
-      roundRectPath(ctx, barX, baseY - amplitude, barWidth, amplitude, 2);
-      ctx.fill();
+      var height = (0.18 + wave * 0.82) * maxBar * (0.55 + heat * 0.9) * (0.7 + this.beat * 0.8);
+      ctx.fillStyle = hsl(this._eqHue[b], 90, 58);
+      ctx.fillRect(slot * b + (slot - barWidth) * 0.5, baseY - height, barWidth, height);
     }
     ctx.restore();
-
-    // subtle scanlines / vignette
-    ctx.save();
-    ctx.globalAlpha = 0.05;
-    ctx.fillStyle = '#000';
-    for (var line = 0; line < height; line += 4) {
-      ctx.fillRect(0, line, width, 1);
-    }
-    ctx.restore();
-
-    var vignette = ctx.createRadialGradient(
-      width * 0.5, height * 0.5, Math.min(width, height) * 0.35,
-      width * 0.5, height * 0.5, Math.max(width, height) * 0.78
-    );
-    vignette.addColorStop(0, 'rgba(0,0,0,0)');
-    vignette.addColorStop(1, 'rgba(0,0,0,0.5)');
-    ctx.fillStyle = vignette;
-    ctx.fillRect(0, 0, width, height);
   };
 
+  /* ---------------------------------------------------------------------
+   * Bricks (flat fills; no per-brick gradients/shadowBlur)
+   * ------------------------------------------------------------------- */
   Renderer.prototype._brickStyle = function (session, brick) {
     var multiplier = this._comboMultiplier(session);
     var heat = clamp((multiplier - 1) / Math.max(1, config.COMBO_MAX - 1), 0, 1);
@@ -302,13 +394,22 @@
     }
     var lightness = style.brickLightness - 2 + heat * 3 + this.beat * (2 + heat * 6);
     var saturation = style.brickSaturation + heat * 6;
-    return { hue: hue, saturation: saturation, lightness: lightness, heat: heat };
+    return {
+      hue: hue,
+      saturation: saturation,
+      lightness: lightness,
+      heat: heat,
+      fill: hsl(hue, saturation, lightness),
+      top: hsl(hue, saturation, Math.min(78, lightness + 12)),
+      bottom: hsl(hue + 12, saturation, Math.max(20, lightness - 14))
+    };
   };
 
   Renderer.prototype._drawBricks = function (session) {
     var ctx = this.ctx;
     var bricks = session.bricks || [];
     var radius = Math.max(3, Math.min(9, (session.layout ? session.layout.brickH : 20) * 0.22));
+    var round = typeof ctx.roundRect === 'function';
 
     for (var i = 0; i < bricks.length; i += 1) {
       var brick = bricks[i];
@@ -316,74 +417,52 @@
       var rect = brick.rect;
       if (!rect || rect.w <= 0 || rect.h <= 0) continue;
 
-      var alpha = 1;
-      if (brick.state === BB.BrickState.FADING) {
-        alpha = clamp(brick.fade / config.BRICK_FADE_TIME, 0, 1);
-      }
+      var alpha = brick.state === BB.BrickState.FADING
+        ? clamp(brick.fade / config.BRICK_FADE_TIME, 0, 1)
+        : 1;
       var look = this._brickStyle(session, brick);
       var x = rect.x;
       var y = rect.y;
       var w = rect.w;
       var h = rect.h;
 
-      ctx.save();
       ctx.globalAlpha = alpha;
-
-      if (look.heat > 0.03) {
-        ctx.shadowColor = hsl(look.hue, 100, 62);
-        ctx.shadowBlur = 6 + look.heat * 14 + this.beat * 8;
+      ctx.fillStyle = look.fill;
+      if (round) {
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, h, radius);
+        ctx.fill();
       } else {
-        ctx.shadowColor = 'rgba(0,0,0,0.45)';
-        ctx.shadowBlur = 6;
-        ctx.shadowOffsetY = 2;
+        roundRectPath(ctx, x, y, w, h, radius);
+        ctx.fill();
       }
 
-      var fill = ctx.createLinearGradient(x, y, x, y + h);
-      fill.addColorStop(0, hsl(look.hue, look.saturation, Math.min(76, look.lightness + 14)));
-      fill.addColorStop(0.55, hsl(look.hue, look.saturation, look.lightness));
-      fill.addColorStop(1, hsl(look.hue + 12, look.saturation, Math.max(20, look.lightness - 16)));
-      ctx.fillStyle = fill;
-      roundRectPath(ctx, x, y, w, h, radius);
-      ctx.fill();
-
-      ctx.shadowBlur = 0;
-      ctx.shadowOffsetY = 0;
-      ctx.globalAlpha = alpha * 0.5;
-      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-      ctx.lineWidth = 1;
-      roundRectPath(ctx, x + 0.75, y + 0.75, w - 1.5, h - 1.5, Math.max(2, radius - 1));
-      ctx.stroke();
-
-      // top highlight
-      ctx.globalAlpha = alpha * 0.28;
-      ctx.fillStyle = '#ffffff';
-      roundRectPath(ctx, x + 3, y + 2.5, w - 6, Math.max(1.5, h * 0.18), Math.max(1, radius * 0.6));
-      ctx.fill();
+      // cheap two-tone bevel (rectangular strips inside the rounded shape)
+      var inset = Math.max(1.5, radius * 0.6);
+      ctx.globalAlpha = alpha * 0.45;
+      ctx.fillStyle = look.top;
+      ctx.fillRect(x + inset, y + inset * 0.7, w - inset * 2, Math.max(1.5, h * 0.22));
+      ctx.globalAlpha = alpha * 0.30;
+      ctx.fillStyle = look.bottom;
+      ctx.fillRect(x + inset, y + h - inset * 1.6, w - inset * 2, Math.max(1, h * 0.16));
 
       if (brick.state === BB.BrickState.CRACKED) {
         ctx.globalAlpha = alpha * 0.55;
         ctx.strokeStyle = 'rgba(8, 10, 24, 0.85)';
         ctx.lineWidth = Math.max(1, h * 0.07);
         ctx.beginPath();
-        ctx.moveTo(x + w * 0.36, y + h * 0.15);
-        ctx.lineTo(x + w * 0.5, y + h * 0.55);
-        ctx.lineTo(x + w * 0.42, y + h * 0.86);
-        ctx.moveTo(x + w * 0.62, y + h * 0.18);
-        ctx.lineTo(x + w * 0.55, y + h * 0.52);
+        ctx.moveTo(x + w * 0.36, y + h * 0.16);
+        ctx.lineTo(x + w * 0.5, y + h * 0.54);
+        ctx.lineTo(x + w * 0.42, y + h * 0.84);
         ctx.stroke();
-      } else if (brick.maxHp > 1 && brick.hp === brick.maxHp) {
-        // small double-hit pip
-        ctx.globalAlpha = alpha * 0.35;
-        ctx.fillStyle = '#ffffff';
-        ctx.beginPath();
-        ctx.arc(x + w - h * 0.34, y + h * 0.5, Math.max(1, h * 0.09), 0, TAU);
-        ctx.fill();
       }
-
-      ctx.restore();
     }
+    ctx.globalAlpha = 1;
   };
 
+  /* ---------------------------------------------------------------------
+   * Paddle / ball / effects
+   * ------------------------------------------------------------------- */
   Renderer.prototype._drawPaddle = function (session) {
     var ctx = this.ctx;
     var paddle = session.paddle;
@@ -395,8 +474,8 @@
     var radius = h * 0.5;
 
     ctx.save();
-    ctx.shadowColor = 'rgba(77, 243, 255, 0.8)';
-    ctx.shadowBlur = 16 + (paddle.flash > 0 ? 20 : 0);
+    ctx.shadowColor = 'rgba(77, 243, 255, 0.75)';
+    ctx.shadowBlur = paddle.flash > 0 ? 26 : 12;
     var fill = ctx.createLinearGradient(x, y, x, y + h);
     fill.addColorStop(0, '#f2ffff');
     fill.addColorStop(0.45, '#5df3ff');
@@ -404,20 +483,10 @@
     ctx.fillStyle = fill;
     roundRectPath(ctx, x, y, w, h, radius);
     ctx.fill();
-
     ctx.shadowBlur = 0;
     ctx.globalAlpha = 0.8;
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    roundRectPath(ctx, x + w * 0.18, y + 1.5, w * 0.64, Math.max(1, h * 0.18), radius);
-    ctx.fill();
-
-    if (paddle.flash > 0) {
-      ctx.globalAlpha = Math.min(1, paddle.flash / 0.12) * 0.5;
-      ctx.strokeStyle = '#eafcff';
-      ctx.lineWidth = 2;
-      roundRectPath(ctx, x - 3, y - 3, w + 6, h + 6, radius + 3);
-      ctx.stroke();
-    }
+    ctx.fillRect(x + w * 0.18, y + 1.2, w * 0.64, Math.max(1, h * 0.18));
     ctx.restore();
   };
 
@@ -426,22 +495,23 @@
     var ball = session.ball;
     if (!ball) return;
 
-    // trail
-    if (this.fxEnabled && !this.reducedMotion) {
+    if (this.fxEnabled && !this.reducedMotion && this._trail.length) {
+      ctx.save();
       for (var i = 0; i < this._trail.length; i += 1) {
         var point = this._trail[i];
         var age = clamp(1 - i / this._trail.length, 0, 1);
-        var radius = ball.radius * (0.2 + age * 0.85);
+        ctx.globalAlpha = age * 0.20;
+        ctx.fillStyle = '#7ff4ff';
         ctx.beginPath();
-        ctx.fillStyle = 'hsla(190, 100%, 70%, ' + (age * 0.22) + ')';
-        ctx.arc(point.x, point.y, radius, 0, TAU);
+        ctx.arc(point.x, point.y, ball.radius * (0.2 + age * 0.8), 0, TAU);
         ctx.fill();
       }
+      ctx.restore();
     }
 
     ctx.save();
     ctx.shadowColor = 'rgba(160, 250, 255, 0.95)';
-    ctx.shadowBlur = 22;
+    ctx.shadowBlur = 18;
     var glow = ctx.createRadialGradient(
       ball.x - ball.radius * 0.3, ball.y - ball.radius * 0.35, ball.radius * 0.15,
       ball.x, ball.y, ball.radius * 1.35
@@ -453,7 +523,6 @@
     ctx.beginPath();
     ctx.arc(ball.x, ball.y, ball.radius * 1.25, 0, TAU);
     ctx.fill();
-
     ctx.shadowBlur = 0;
     ctx.fillStyle = '#ffffff';
     ctx.beginPath();
@@ -465,36 +534,32 @@
   Renderer.prototype._drawParticles = function () {
     if (!this._particles.length) return;
     var ctx = this.ctx;
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
     for (var i = 0; i < this._particles.length; i += 1) {
       var particle = this._particles[i];
       var progress = particle.life / particle.ttl;
-      var alpha = (1 - progress) * 0.9;
-      ctx.globalAlpha = alpha;
+      ctx.globalAlpha = (1 - progress) * 0.9;
       ctx.fillStyle = hsl(particle.hue, 100, 70);
       ctx.beginPath();
       ctx.arc(particle.x, particle.y, particle.size * (1 - progress * 0.6), 0, TAU);
       ctx.fill();
     }
-    ctx.restore();
+    ctx.globalAlpha = 1;
   };
 
   Renderer.prototype._drawWaves = function () {
     if (!this._waves.length) return;
     var ctx = this.ctx;
-    ctx.save();
     for (var i = 0; i < this._waves.length; i += 1) {
       var wave = this._waves[i];
       var progress = wave.life / wave.ttl;
-      ctx.globalAlpha = (1 - progress) * 0.35;
+      ctx.globalAlpha = (1 - progress) * 0.3;
       ctx.strokeStyle = hsl(wave.hue, 100, 68);
-      ctx.lineWidth = 2 + (1 - progress) * 3;
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(wave.x, wave.y, 8 + progress * 70, 0, TAU);
+      ctx.arc(wave.x, wave.y, 8 + progress * 64, 0, TAU);
       ctx.stroke();
     }
-    ctx.restore();
+    ctx.globalAlpha = 1;
   };
 
   Renderer.prototype._drawPopups = function (session) {
@@ -511,8 +576,6 @@
       var progress = 1 - clamp(popup.life / popup.ttl, 0, 1);
       var hue = typeof popup.colorHue === 'number' ? popup.colorHue : 190;
       ctx.globalAlpha = clamp(popup.life / popup.ttl, 0, 1);
-      ctx.shadowColor = hsl(hue, 100, 65);
-      ctx.shadowBlur = 12;
       ctx.fillStyle = hsl(hue, 100, 78);
       ctx.fillText(popup.text, popup.x, popup.y - progress * config.POPUP_RISE);
     }
@@ -522,9 +585,7 @@
   Renderer.prototype.draw = function (session) {
     if (!this.width || !this.height) return;
     var ctx = this.ctx;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    ctx.clearRect(0, 0, this.width, this.height);
-
+    ctx.setTransform(this.effectiveDpr, 0, 0, this.effectiveDpr, 0, 0);
     this._drawBackground(session);
 
     ctx.save();

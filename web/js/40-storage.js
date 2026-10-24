@@ -16,8 +16,11 @@
     bestLevel: 1,
     instrument: BB.config.DEFAULT_INSTRUMENT,
     muted: false,
-    lightShow: true
+    lightShow: true,
+    quality: 'auto'
   };
+
+  var QUALITY_MODES = { auto: true, high: true, low: true };
 
   function Storage(options) {
     options = options || {};
@@ -58,6 +61,9 @@
       }
       if (typeof data.muted === 'boolean') merged.muted = data.muted;
       if (typeof data.lightShow === 'boolean') merged.lightShow = data.lightShow;
+      if (typeof data.quality === 'string' && QUALITY_MODES[data.quality]) {
+        merged.quality = data.quality;
+      }
     }
     return merged;
   };

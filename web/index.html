@@ -66,6 +66,7 @@
           <span class="combo-eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
         </div>
       </div>
+      <div class="perf-hud" id="perfHud" hidden>FPS –</div>
 
       <!-- ───────────── DOM overlays (menus / pause / game over) ───────────── -->
       <div class="overlay" id="overlay" hidden>
@@ -161,9 +162,13 @@
               <span class="switch-knob"></span>
             </button>
           </div>
-          <div class="settings-row">
-            <span>Best combo</span>
-            <strong id="settingsBestCombo">×1</strong>
+          <div class="settings-row settings-row-quality">
+            <span>画质 / Quality</span>
+            <div class="seg" id="qualityGroup" role="radiogroup" aria-label="Rendering quality">
+              <button type="button" class="seg-btn" data-quality="auto" role="radio" aria-checked="true">AUTO</button>
+              <button type="button" class="seg-btn" data-quality="high" role="radio" aria-checked="false">CRISP</button>
+              <button type="button" class="seg-btn" data-quality="low" role="radio" aria-checked="false">FAST</button>
+            </div>
           </div>
 
           <div class="panel-actions">

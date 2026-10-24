@@ -27,10 +27,39 @@
 
     this.storage = new BB.Storage();
     this.saved = this.storage.load();
+    this._params = new URLSearchParams(global.location.search || '');
+    this._deviceDpr = Math.max(1, Math.min(4, global.devicePixelRatio || 1));
+    this._qualityScale = 1;
+    this._autoQuality = true;
+    this._qualityMode = 'auto';
+    var qualityParam = this._params.get('quality') || this.saved.quality || 'auto';
+    if (qualityParam === 'high') {
+      this._qualityMode = 'high';
+      this._qualityScale = 1;
+      this._autoQuality = false;
+    } else if (qualityParam === 'low') {
+      this._qualityMode = 'low';
+      this._qualityScale = 0.7;
+      this._autoQuality = false;
+    } else {
+      this._qualityMode = 'auto';
+      this._qualityScale = 1;
+      this._autoQuality = true;
+    }
+
+    this.perf = {
+      fps: 0,
+      scale: this._qualityScale,
+      effectiveDpr: 1,
+      backing: '0x0',
+      lowWindows: 0,
+      highWindows: 0
+    };
 
     this.canvas = el('game');
     this.stage = el('stage');
     this.renderer = new BB.Renderer(this.canvas);
+    this.renderer.setQualityScale(this._qualityScale);
     this.renderer.setFxEnabled(this.saved.lightShow);
 
     this.audio = new BB.AudioEngine({
@@ -49,6 +78,10 @@
     this.session.settings.muted = this.saved.muted;
 
     this.dom = this._collectDom();
+    this._perfTimerElapsed = 0;
+    this._perfTimerFrames = 0;
+    this._showStats = this._params.get('stats') === '1';
+    if (this.dom.perfHud) this.dom.perfHud.hidden = !this._showStats;
     this._bindEvents();
     this._buildInstrumentCards();
     this.resize();
@@ -73,7 +106,7 @@
       'btnCloseSettings', 'btnPreview', 'btnFullscreen', 'btnSoundToggle',
       'btnFxToggle', 'settingsBestCombo', 'titleBest', 'titleBestCombo', 'titleInstrument',
       'overScore', 'overBest', 'overLevel', 'overCombo', 'newRecord', 'readyLives',
-      'levelTitle', 'levelBonus', 'toast', 'btnSettings', 'stage'
+      'levelTitle', 'levelBonus', 'toast', 'btnSettings', 'stage', 'perfHud', 'qualityGroup'
     ];
     var out = {};
     for (var i = 0; i < ids.length; i += 1) out[ids[i]] = el(ids[i]);
@@ -123,13 +156,84 @@
     var rect = this.stage.getBoundingClientRect();
     var width = Math.max(240, Math.round(rect.width));
     var height = Math.max(200, Math.round(rect.height));
+    this._deviceDpr = Math.max(1, Math.min(4, global.devicePixelRatio || 1));
     if (width === this.renderer.width && height === this.renderer.height &&
-        this.renderer.dpr === Math.max(1, global.devicePixelRatio || 1)) {
+        this.renderer.dpr === this._deviceDpr) {
       return;
     }
-    var dpr = Math.max(1, Math.min(4, global.devicePixelRatio || 1));
     this.session.resize(width, height);
-    this.renderer.resize(width, height, dpr);
+    this.renderer.resize(width, height, this._deviceDpr);
+    this._updatePerfReadout();
+  };
+
+  /* Adaptive resolution: keep the simulation at 120 Hz but trade canvas
+   * backing resolution for frame rate when the device cannot keep up. */
+  App.prototype._applyQuality = function (scale) {
+    var next = Math.max(0.6, Math.min(1, Math.round(scale * 100) / 100));
+    if (Math.abs(next - this._qualityScale) < 0.01) return;
+    this._qualityScale = next;
+    this.perf.scale = next;
+    this.renderer.setQualityScale(next);
+    this.renderer.resize(this.renderer.width, this.renderer.height, this._deviceDpr);
+    this._updatePerfReadout();
+  };
+
+  /** Manual quality mode from the DJ booth: auto / crisp / fast. */
+  App.prototype.selectQuality = function (mode) {
+    if (mode !== 'auto' && mode !== 'high' && mode !== 'low') return;
+    this._qualityMode = mode;
+    this._autoQuality = mode === 'auto';
+    this.saved.quality = mode;
+    this.storage.update({ quality: mode });
+    if (mode === 'high') this._applyQuality(1);
+    else if (mode === 'low') this._applyQuality(0.7);
+    else {
+      this.perf.lowWindows = 0;
+      this.perf.highWindows = 0;
+      this._applyQuality(1);
+    }
+    this._syncQualityButtons();
+    this.toast(mode === 'auto' ? 'Quality: AUTO (adaptive)' : mode === 'high' ? 'Quality: CRISP' : 'Quality: FAST');
+  };
+
+  App.prototype._syncQualityButtons = function () {
+    if (!this.dom || !this.dom.qualityGroup) return;
+    var buttons = this.dom.qualityGroup.querySelectorAll('button[data-quality]');
+    for (var i = 0; i < buttons.length; i += 1) {
+      var active = buttons[i].getAttribute('data-quality') === this._qualityMode;
+      buttons[i].setAttribute('aria-checked', active ? 'true' : 'false');
+    }
+  };
+
+  App.prototype._adaptQuality = function (fps) {
+    if (!this._autoQuality) return;
+    if (fps < 45) {
+      this.perf.lowWindows += 1;
+      this._applyQuality(this._qualityScale * 0.85);
+    } else if (fps < 54 && this._qualityScale > 0.7) {
+      this.perf.lowWindows += 1;
+      this._applyQuality(this._qualityScale * 0.94);
+    } else {
+      this.perf.lowWindows = 0;
+      if (fps > 57 && this._qualityScale < 1) {
+        this.perf.highWindows += 1;
+        if (this.perf.highWindows >= 3) {
+          this._applyQuality(this._qualityScale + 0.05);
+          this.perf.highWindows = 0;
+        }
+      } else {
+        this.perf.highWindows = 0;
+      }
+    }
+  };
+
+  App.prototype._updatePerfReadout = function () {
+    this.perf.effectiveDpr = this.renderer.effectiveDpr;
+    this.perf.backing = this.renderer.canvas.width + '×' + this.renderer.canvas.height;
+    if (!this._showStats || !this.dom.perfHud) return;
+    this.dom.perfHud.textContent = 'FPS ' + Math.round(this.perf.fps) +
+      ' · Q ' + this._qualityScale.toFixed(2) +
+      ' · ' + this.perf.backing + ' @' + this.renderer.effectiveDpr.toFixed(2) + 'x';
   };
 
   /* ---------------------------------------------------------------------
@@ -178,6 +282,14 @@
       self._syncToggles();
       self.toast(self.renderer.fxEnabled ? 'Combo light show on' : 'Combo light show off');
     });
+    if (this.dom.qualityGroup) {
+      var qualityButtons = this.dom.qualityGroup.querySelectorAll('button[data-quality]');
+      for (var qi = 0; qi < qualityButtons.length; qi += 1) {
+        qualityButtons[qi].addEventListener('click', function (event) {
+          self.selectQuality(event.currentTarget.getAttribute('data-quality'));
+        });
+      }
+    }
 
     if (typeof ResizeObserver === 'function') {
       this._resizeObserver = new ResizeObserver(function () { self.resize(); });
@@ -411,6 +523,7 @@
     if (this.resumeAfterSettings) this.session.apply(BB.Intent.TOGGLE_PAUSE);
     this.dom.settingsOverlay.hidden = false;
     this._syncToggles();
+    this._syncQualityButtons();
     this._syncInstrumentCards();
     this._syncPanels(true);
   };
@@ -602,21 +715,24 @@
     this.handle = requestAnimationFrame(function (next) { self.frame(next); });
 
     if (!this.lastTime) this.lastTime = time;
-    var dt = (time - this.lastTime) / 1000;
+    var rawDt = (time - this.lastTime) / 1000;
     this.lastTime = time;
-    if (!Number.isFinite(dt) || dt < 0) dt = 0;
-    dt = Math.min(dt, config.MAX_FRAME_TIME);
+    if (!Number.isFinite(rawDt) || rawDt < 0) rawDt = 0;
+    var dt = Math.min(rawDt, config.MAX_FRAME_TIME);
 
-    var state = this.session.state;
     var wasOver = this._wasOver;
     this.session.setMoveAxis(this.input.getAxis());
     this.accumulator = Math.min(this.accumulator + dt, config.MAX_FRAME_TIME);
     var steps = 0;
-    while (this.accumulator >= config.PHYSICS_STEP && steps < 12) {
-      this.session.update(config.PHYSICS_STEP);
-      this.accumulator -= config.PHYSICS_STEP;
-      steps += 1;
-      if (this.session.state === BB.RunState.GAME_OVER) break;
+    if (!this._demoFrozen) {
+      while (this.accumulator >= config.PHYSICS_STEP && steps < 12) {
+        this.session.update(config.PHYSICS_STEP);
+        this.accumulator -= config.PHYSICS_STEP;
+        steps += 1;
+        if (this.session.state === BB.RunState.GAME_OVER) break;
+      }
+    } else {
+      this.accumulator = 0;
     }
 
     this.renderer.sync(this.session, dt);
@@ -625,15 +741,24 @@
     this._syncPanels();
     this.frameCount += 1;
 
+    // Rolling FPS measurement + adaptive canvas resolution.
+    this._perfTimerElapsed += Math.min(rawDt, 0.25);
+    this._perfTimerFrames += 1;
+    if (this._perfTimerElapsed >= 0.8) {
+      var fps = this._perfTimerFrames / this._perfTimerElapsed;
+      this.perf.fps = fps;
+      this._perfTimerElapsed = 0;
+      this._perfTimerFrames = 0;
+      this._adaptQuality(fps);
+      this._updatePerfReadout();
+    }
+
     if (this.session.state === BB.RunState.GAME_OVER && !wasOver) {
       this._saveRecords();
       this._fillOver();
     }
     this._wasOver = this.session.state === BB.RunState.GAME_OVER;
     this._gameOverAt = this._wasOver ? (this._gameOverAt || time) : 0;
-    if (state === BB.RunState.GAME_OVER && this._gameOverAt && time - this._gameOverAt > 1200) {
-      // keep overlay stable; nothing else needed
-    }
   };
 
   /* ---------------------------------------------------------------------
@@ -651,10 +776,23 @@
     this.started = true;
     var self = this;
     var session = this.session;
+    var live = this._params.get('live') === '1';
     this._demoMultiplier = 1;
 
     if (mode === 'playing' || mode === 'combo' || mode === 'combo5') {
       session.apply(BB.Intent.PRIMARY);
+      if (!live) {
+        // Deterministic screenshot fixture: keep physics frozen so the ball
+        // cannot fall and replace the playfield with the "ball lost" overlay.
+        this._demoFrozen = true;
+        if (session.ball) {
+          session.ball.state = BB.BallState.IN_FLIGHT;
+          session.ball.x = session.layout.width * 0.5;
+          session.ball.y = session.layout.height * 0.52;
+          session.ball.vx = 120;
+          session.ball.vy = -160;
+        }
+      }
       if (mode === 'combo' || mode === 'combo5') {
         var multiplier = mode === 'combo5' ? config.COMBO_MAX : 3;
         this._demoMultiplier = multiplier;
@@ -737,6 +875,7 @@
         audio: app.audio,
         renderer: app.renderer,
         storage: app.storage,
+        perf: app.perf,
         startDemo: function (mode) { app.startDemo(mode); }
       };
       global.__bb.ready = true;

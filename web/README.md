@@ -101,12 +101,39 @@ pulse; as the combo multiplier climbs:
 The light show is render-only: it reads the session and never touches the game
 model. Toggle it in the DJ booth; `prefers-reduced-motion` is respected.
 
+## Performance & quality
+
+The game loop simulates at a fixed 120 Hz and renders every animation frame. The
+renderer is tuned so this stays smooth even on high-DPI laptops:
+
+- the static scenery (gradient, perspective grid, scanlines, vignette) is cached
+  in an offscreen canvas and blitted once per frame;
+- bricks use flat fills + highlight/shade strips instead of per-brick gradients
+  and `shadowBlur`; the combo glow is a cached sprite;
+- the canvas backing store is sized from `devicePixelRatio`, and **adaptive
+  resolution** lowers that scale when the frame rate drops (it raises it again
+  when the machine can keep up). The simulation is never slowed down.
+- CSS performance: no `backdrop-filter` on the HUD/chips over the animated
+  canvas, and the ambient background is static.
+
+If you want to inspect or control it:
+
+| What | How |
+| --- | --- |
+| Live FPS / quality / backing size | open `index.html?stats=1` |
+| Force crispest rendering | **DJ booth → 画质 / Quality → CRISP**, or `?quality=high` |
+| Force fastest rendering | **DJ booth → Quality → FAST**, or `?quality=low` |
+| Back to adaptive | **DJ booth → Quality → AUTO** (default) |
+
+`?quality=high|low` is a temporary override for testing; the DJ-booth choice is
+remembered in `localStorage`.
+
 ## Persistence
 
 `localStorage` (key `brick-breaker.web.v1`) stores best score, best combo, best
-level, the selected instrument, mute state and the light-show preference. Keep
-in mind that some browsers isolate `file://` storage; serve the folder (see
-above) if you want records to survive reliably.
+level, the selected instrument, mute state, the light-show preference and the
+quality mode. Keep in mind that some browsers isolate `file://` storage; serve
+the folder (see above) if you want records to survive reliably.
 
 ## Project layout
 
@@ -173,8 +200,12 @@ fixtures for screenshots.
 ## Design notes
 
 - **HiDPI:** the canvas backing store is `CSS size × devicePixelRatio`
-  (clamped 1–4); all game logic runs in CSS pixels. DOM HUD text therefore stays
-  crisp at any zoom or Retina display.
+  (clamped and adapted for performance); all game logic runs in CSS pixels. DOM
+  HUD text therefore stays crisp at any zoom or Retina display.
+- **Adaptive performance:** if a device cannot sustain ~55 fps, the renderer
+  lowers only the canvas resolution (never the physics rate) and recovers it when
+  there is headroom. `?stats=1` shows the live numbers; the DJ booth can force
+  CRISP or FAST.
 - **Responsive:** the playfield is derived from the live canvas size; the layout
   switches to compact HUD + touch hints on phones (portrait and landscape).
 - **Accessibility:** semantic buttons with ARIA, focus-visible styles,

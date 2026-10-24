@@ -59,7 +59,7 @@ Load order is the dependency graph and is fixed in `index.html`:
 | `js/22-physics.js` | M4 PHYSICS | circle-rect test, sub-stepped collision engine producing plain events |
 | `js/30-audio.js` | M7 AUDIO | Web Audio engine: `NOTE_TABLE`, four `INSTRUMENTS` presets, oscillator/periodic-wave envelopes, noise transients, mute, instrument cycling |
 | `js/40-storage.js` | — (web-only) | typed localStorage access with in-memory fallback |
-| `js/50-renderer.js` | M8 VIEW | canvas drawing, HiDPI backing store, particles, DJ combo light show |
+| `js/50-renderer.js` | M8 VIEW | canvas drawing, HiDPI backing store, cached static scenery, flat-shaded DJ light show, adaptive resolution scale |
 | `js/60-session.js` | M10 SESSION | the only owner of `RunState`; consumes collision events, applies intents, calls audio, spawns popups, handles resize and pointer aiming |
 | `js/70-input.js` | M9 INPUT | keyboard/pointer/touch translation, held-key axis, `Intent` events, focus-loss handling |
 | `js/80-app.js` | M11 APP + web shell | RAF fixed-timestep loop, DOM HUD/overlays, audio unlock, persistence wiring, demo fixtures |
@@ -128,22 +128,33 @@ effect honours the DJ-booth toggle and `prefers-reduced-motion`.
 ## HiDPI + responsive layout
 
 - `Renderer.resize(cssWidth, cssHeight, dpr)` sizes the canvas backing store to
-  `round(css × dpr)` (DPR clamped 1–4), sets `ctx.setTransform(dpr, …)`, and all
-  drawing uses CSS pixel coordinates. Text in the HUD/overlays is real DOM text,
-  so it is always crisp.
+  `round(css × dpr × qualityScale)` (DPR clamped, quality scale 0.6–1), sets
+  `ctx.setTransform(dpr, …)`, and all drawing uses CSS pixel coordinates. Text in
+  the HUD/overlays is real DOM text, so it is always crisp.
+- **Adaptive resolution:** `80-app.js` measures a rolling frame rate; when it
+  stays below ~54 fps it calls `renderer.setQualityScale()` with a smaller scale
+  (recreating the static background cache at the new size) and raises it again
+  after a stable ~57+ fps. The simulation timestep is independent of this and
+  stays at 120 Hz, so input latency and physics do not degrade. The DJ booth
+  exposes AUTO / CRISP / FAST; `?stats=1` shows FPS, scale and backing size.
+- **Static background cache:** the gradient, perspective grid, scanlines and
+  vignette are rendered once into an offscreen canvas on resize and blitted per
+  frame; bricks use flat fills and highlight/shade strips instead of per-brick
+  gradients or `shadowBlur`. This is what keeps Canvas2D fast on high-DPR panels.
 - `App.resize()` uses a `ResizeObserver` on the stage plus window/orientation/
   fullscreen listeners; the session re-derives the room/grid from the new canvas
   size (same formulas as the desktop `FieldLayout.compute`).
 - CSS supports small phones (compact HUD, touch hints, safe-area insets),
-  landscape phones and large desktop screens.
+  landscape phones and large desktop screens. The HUD does not use
+  `backdrop-filter` over the animated canvas, and ambient lighting is static.
 
 ## Persistence
 
 `BB.Storage` wraps `localStorage` (key `brick-breaker.web.v1`) and falls back to
 in-memory state when storage is unavailable (e.g. some `file://` contexts).
-Schema: `{ bestScore, bestCombo, bestLevel, instrument, muted, lightShow }`.
-Records are written when a run ends; instrument/mute/light-show changes persist
-immediately.
+Schema: `{ bestScore, bestCombo, bestLevel, instrument, muted, lightShow, quality }`.
+Records are written when a run ends; instrument/mute/light-show/quality changes
+persist immediately.
 
 ## Testing strategy
 
@@ -168,6 +179,7 @@ immediately.
 | New visual theme | edit CSS custom properties in `css/style.css` and `BB.style` palette |
 | New UI panel | add DOM markup + a `panel-*` section and one branch in `App._syncPanels()` |
 | Persist more state | add a default in `40-storage.js` and read it in `App` |
+| Tune performance | adjust the FPS thresholds in `App._adaptQuality()` or the `qualityScale` clamp in `Renderer.resize()` |
 
 ## Constraints / non-goals
 
