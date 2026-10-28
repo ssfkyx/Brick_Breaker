@@ -108,13 +108,21 @@ renderer is tuned so this stays smooth even on high-DPI laptops:
 
 - the static scenery (gradient, perspective grid, scanlines, vignette) is cached
   in an offscreen canvas and blitted once per frame;
-- bricks use flat fills + highlight/shade strips instead of per-brick gradients
-  and `shadowBlur`; the combo glow is a cached sprite;
+- bricks are **deliberately low-fi pixel sprites**: each one is a 20×8 pixel tile
+  (outline, chunky bevel, dither marks, crack pixels) stretched with
+  nearest-neighbour filtering. That is faster than drawing rounded paths and
+  gradients per brick, and gives the wall an arcade-CRT feel instead of a glossy
+  web look;
+- the combo glow is a cached sprite, and the equalizer bars are plain rects;
 - the canvas backing store is sized from `devicePixelRatio`, and **adaptive
   resolution** lowers that scale when the frame rate drops (it raises it again
   when the machine can keep up). The simulation is never slowed down.
 - CSS performance: no `backdrop-filter` on the HUD/chips over the animated
   canvas, and the ambient background is static.
+
+With the pixel bricks, the adaptive renderer reaches ~60 fps at
+1440×900@DPR2 in software-rendered headless Chrome (full 2× backing ~34 fps
+there; a real GPU is faster), and 60 fps at DPR1 and on phones.
 
 If you want to inspect or control it:
 

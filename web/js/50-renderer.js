@@ -71,6 +71,7 @@
     this._bgWidth = 0;
     this._bgHeight = 0;
     this._glowSprites = {};
+    this._brickSprites = {};
     this._rowHueStrings = null;
     this._eqHue = null;
 
@@ -378,8 +379,82 @@
   };
 
   /* ---------------------------------------------------------------------
-   * Bricks (flat fills; no per-brick gradients/shadowBlur)
+   * Bricks: tiny pixel-art sprites scaled up with nearest-neighbour filtering.
+   *
+   * Each brick is a 20×8 pixel sprite (outline, chunky bevel, dither marks,
+   * crack pixels) stretched over the brick rect. That is much cheaper than
+   * per-brick paths/gradients and gives the wall an arcade-CRT look. Combo
+   * colours are quantised into small hue/lightness buckets so the sprite cache
+   * stays tiny while the wall still visibly cycles colour.
    * ------------------------------------------------------------------- */
+  var BRICK_SPRITE_W = 20;
+  var BRICK_SPRITE_H = 8;
+
+  Renderer.prototype._brickSprite = function (hue, lightness, state, maxHp) {
+    var hueBucket = Math.round((((hue % 360) + 360) % 360) / 12) * 12 % 360;
+    var lightBucket = Math.round(lightness / 4) * 4;
+    var key = hueBucket + ':' + lightBucket + ':' + state + ':' + (maxHp > 1 ? '2' : '1');
+    var cached = this._brickSprites[key];
+    if (cached) return cached;
+
+    var W = BRICK_SPRITE_W;
+    var H = BRICK_SPRITE_H;
+    var canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    var g = canvas.getContext('2d');
+    var saturation = style.brickSaturation;
+    var body = hsl(hueBucket, saturation, lightBucket);
+    var top = hsl(hueBucket, saturation, Math.min(80, lightBucket + 16));
+    var bottom = hsl((hueBucket + 14) % 360, saturation, Math.max(18, lightBucket - 16));
+    var outline = 'rgba(4, 6, 14, 0.92)';
+
+    // dark pixel outline with clipped corners
+    g.fillStyle = outline;
+    g.fillRect(0, 0, W, H);
+    g.clearRect(0, 0, 1, 1);
+    g.clearRect(W - 1, 0, 1, 1);
+    g.clearRect(0, H - 1, 1, 1);
+    g.clearRect(W - 1, H - 1, 1, 1);
+
+    // body + chunky two-tone bevel
+    g.fillStyle = body;
+    g.fillRect(1, 1, W - 2, H - 2);
+    g.fillStyle = top;
+    g.fillRect(1, 1, W - 2, 1);
+    g.fillRect(1, 1, 1, H - 2);
+    g.fillStyle = bottom;
+    g.fillRect(1, H - 2, W - 2, 1);
+    g.fillRect(W - 2, 2, 1, H - 4);
+
+    // dither marks (the deliberately "low quality" texture)
+    g.fillStyle = 'rgba(255, 255, 255, 0.28)';
+    g.fillRect(3, 2, 2, 1);
+    g.fillRect(W - 6, 2, 2, 1);
+    g.fillStyle = 'rgba(0, 0, 0, 0.22)';
+    g.fillRect(5, H - 3, 1, 1);
+    g.fillRect(W - 8, H - 3, 1, 1);
+
+    if (maxHp > 1) {
+      g.fillStyle = 'rgba(255, 255, 255, 0.9)';
+      g.fillRect(Math.floor(W / 2) - 1, Math.floor(H / 2) - 1, 2, 2);
+    }
+
+    if (state === BB.BrickState.CRACKED) {
+      g.fillStyle = 'rgba(3, 4, 12, 0.9)';
+      g.fillRect(7, 1, 1, 2);
+      g.fillRect(8, 3, 1, 2);
+      g.fillRect(7, 5, 1, 2);
+      g.fillRect(12, 2, 1, 1);
+      g.fillRect(13, 3, 1, 2);
+      g.fillRect(12, 5, 1, 1);
+    }
+
+    if (Object.keys(this._brickSprites).length > 320) this._brickSprites = {};
+    this._brickSprites[key] = canvas;
+    return canvas;
+  };
+
   Renderer.prototype._brickStyle = function (session, brick) {
     var multiplier = this._comboMultiplier(session);
     var heat = clamp((multiplier - 1) / Math.max(1, config.COMBO_MAX - 1), 0, 1);
@@ -393,24 +468,14 @@
       }
     }
     var lightness = style.brickLightness - 2 + heat * 3 + this.beat * (2 + heat * 6);
-    var saturation = style.brickSaturation + heat * 6;
-    return {
-      hue: hue,
-      saturation: saturation,
-      lightness: lightness,
-      heat: heat,
-      fill: hsl(hue, saturation, lightness),
-      top: hsl(hue, saturation, Math.min(78, lightness + 12)),
-      bottom: hsl(hue + 12, saturation, Math.max(20, lightness - 14))
-    };
+    return { hue: hue, lightness: lightness, heat: heat };
   };
 
   Renderer.prototype._drawBricks = function (session) {
     var ctx = this.ctx;
     var bricks = session.bricks || [];
-    var radius = Math.max(3, Math.min(9, (session.layout ? session.layout.brickH : 20) * 0.22));
-    var round = typeof ctx.roundRect === 'function';
-
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
     for (var i = 0; i < bricks.length; i += 1) {
       var brick = bricks[i];
       if (brick.state === BB.BrickState.GONE) continue;
@@ -420,44 +485,14 @@
       var alpha = brick.state === BB.BrickState.FADING
         ? clamp(brick.fade / config.BRICK_FADE_TIME, 0, 1)
         : 1;
+      if (alpha <= 0.01) continue;
       var look = this._brickStyle(session, brick);
-      var x = rect.x;
-      var y = rect.y;
-      var w = rect.w;
-      var h = rect.h;
-
+      var sprite = this._brickSprite(look.hue, look.lightness, brick.state, brick.maxHp);
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = look.fill;
-      if (round) {
-        ctx.beginPath();
-        ctx.roundRect(x, y, w, h, radius);
-        ctx.fill();
-      } else {
-        roundRectPath(ctx, x, y, w, h, radius);
-        ctx.fill();
-      }
-
-      // cheap two-tone bevel (rectangular strips inside the rounded shape)
-      var inset = Math.max(1.5, radius * 0.6);
-      ctx.globalAlpha = alpha * 0.45;
-      ctx.fillStyle = look.top;
-      ctx.fillRect(x + inset, y + inset * 0.7, w - inset * 2, Math.max(1.5, h * 0.22));
-      ctx.globalAlpha = alpha * 0.30;
-      ctx.fillStyle = look.bottom;
-      ctx.fillRect(x + inset, y + h - inset * 1.6, w - inset * 2, Math.max(1, h * 0.16));
-
-      if (brick.state === BB.BrickState.CRACKED) {
-        ctx.globalAlpha = alpha * 0.55;
-        ctx.strokeStyle = 'rgba(8, 10, 24, 0.85)';
-        ctx.lineWidth = Math.max(1, h * 0.07);
-        ctx.beginPath();
-        ctx.moveTo(x + w * 0.36, y + h * 0.16);
-        ctx.lineTo(x + w * 0.5, y + h * 0.54);
-        ctx.lineTo(x + w * 0.42, y + h * 0.84);
-        ctx.stroke();
-      }
+      ctx.drawImage(sprite, Math.round(rect.x), Math.round(rect.y), Math.round(rect.w), Math.round(rect.h));
     }
     ctx.globalAlpha = 1;
+    ctx.restore();
   };
 
   /* ---------------------------------------------------------------------

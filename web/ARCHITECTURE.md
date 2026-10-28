@@ -139,8 +139,11 @@ effect honours the DJ-booth toggle and `prefers-reduced-motion`.
   exposes AUTO / CRISP / FAST; `?stats=1` shows FPS, scale and backing size.
 - **Static background cache:** the gradient, perspective grid, scanlines and
   vignette are rendered once into an offscreen canvas on resize and blitted per
-  frame; bricks use flat fills and highlight/shade strips instead of per-brick
-  gradients or `shadowBlur`. This is what keeps Canvas2D fast on high-DPR panels.
+  frame. Bricks are **20×8 pixel-art sprites** (outline, chunky bevel, dither
+  marks, crack pixels) stretched with `imageSmoothingEnabled = false`; sprite
+  variants are cached per quantised hue/lightness bucket, so the combo colour
+  cycle stays cheap while the wall keeps a deliberately low-fi arcade look.
+  This is what keeps Canvas2D fast on high-DPR panels.
 - `App.resize()` uses a `ResizeObserver` on the stage plus window/orientation/
   fullscreen listeners; the session re-derives the room/grid from the new canvas
   size (same formulas as the desktop `FieldLayout.compute`).

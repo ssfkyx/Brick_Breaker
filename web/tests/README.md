@@ -75,16 +75,17 @@ Chrome is auto-detected in the usual Windows/macOS/Linux install locations; set
 ## Performance checks
 
 The renderer is tuned for Canvas2D: static scenery is cached in an offscreen
-canvas, bricks are flat-shaded (no per-brick `shadowBlur`/gradients), the HUD has
-no `backdrop-filter` over the animated canvas, and the app adapts the canvas
+canvas, bricks are low-fi 20×8 pixel sprites drawn with nearest-neighbour
+filtering (no per-brick paths, gradients or `shadowBlur`), the HUD has no
+`backdrop-filter` over the animated canvas, and the app adapts the canvas
 resolution when the frame rate drops (simulation stays 120 Hz). `?stats=1` shows
 the live values. Typical headless-Chrome measurements on this machine
 (software rendering, so real GPUs are faster):
 
 | Scenario | Before | After |
 | --- | --- | --- |
-| 1440×900 @DPR2, full quality | ~10 fps | ~31–33 fps |
-| 1440×900 @DPR2, adaptive | ~10 fps | ~53–58 fps (scale ≈0.6–0.7) |
+| 1440×900 @DPR2, full quality | ~10 fps | ~34 fps |
+| 1440×900 @DPR2, adaptive | ~10 fps | **~60 fps** (scale ≈0.6–0.8) |
 | 1440×900 @DPR1 | ~32 fps | 60 fps |
 | 390×844 @DPR2 (mobile) | — | 60 fps at full quality |
 
