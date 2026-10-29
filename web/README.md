@@ -113,6 +113,9 @@ renderer is tuned so this stays smooth even on high-DPI laptops:
   nearest-neighbour filtering. That is faster than drawing rounded paths and
   gradients per brick, and gives the wall an arcade-CRT feel instead of a glossy
   web look;
+- the paddle uses the same pixel language (36×5 sprite with outline/bevel/grip
+  dither) and is tinted by the same combo heat, so the board you control feels
+  part of the wall rather than a smooth web widget;
 - the combo glow is a cached sprite, and the equalizer bars are plain rects;
 - the canvas backing store is sized from `devicePixelRatio`, and **adaptive
   resolution** lowers that scale when the frame rate drops (it raises it again

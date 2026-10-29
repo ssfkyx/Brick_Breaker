@@ -142,8 +142,10 @@ effect honours the DJ-booth toggle and `prefers-reduced-motion`.
   frame. Bricks are **20×8 pixel-art sprites** (outline, chunky bevel, dither
   marks, crack pixels) stretched with `imageSmoothingEnabled = false`; sprite
   variants are cached per quantised hue/lightness bucket, so the combo colour
-  cycle stays cheap while the wall keeps a deliberately low-fi arcade look.
-  This is what keeps Canvas2D fast on high-DPR panels.
+  cycle stays cheap while the wall keeps a deliberately low-fi arcade look. The
+  paddle reuses the same approach (36×5 sprite, nearest-neighbour, tinted by the
+  combo heat) so the controlled object matches the wall. This is what keeps
+  Canvas2D fast on high-DPR panels.
 - `App.resize()` uses a `ResizeObserver` on the stage plus window/orientation/
   fullscreen listeners; the session re-derives the room/grid from the new canvas
   size (same formulas as the desktop `FieldLayout.compute`).

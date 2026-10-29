@@ -49,6 +49,11 @@ Version numbers before 1.0.0 are retrospective labels for the dated milestones.
   inside the resize call so a just-cleared canvas is never presented blank. The
   brick sprite cache is no longer flushed mid-run either. Verified under
   DevTools CPU throttling: 1–2 monotonic quality changes and no oscillation.
+- Pixel-art paddle synced to the brick style: the last smooth-gradient object in
+  the playfield now uses a 36×5 nearest-neighbour sprite (outline, chunky bevel,
+  grip dither) tinted by the same combo heat as the wall, including a flash
+  variant when the ball hits it. Removes another `shadowBlur`/gradient from the
+  hot path.
 - Web test tooling with no npm dependency: 35 `node:test` simulation tests
   (`web/tests/core.test.mjs`) plus a DevTools-Protocol browser checker
   (`web/tests/browser-check.mjs`) for layout/DPR/overflow/console-error checks,

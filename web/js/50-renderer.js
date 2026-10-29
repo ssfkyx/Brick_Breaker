@@ -72,6 +72,7 @@
     this._bgHeight = 0;
     this._glowSprites = {};
     this._brickSprites = {};
+    this._paddleSprites = {};
     this._rowHueStrings = null;
     this._eqHue = null;
 
@@ -498,32 +499,86 @@
   };
 
   /* ---------------------------------------------------------------------
-   * Paddle / ball / effects
+   * Paddle: same low-fi pixel language as the bricks (36x5 sprite, nearest
+   * neighbour), tinted by the same combo heat so the player's board feels part
+   * of the wall instead of a smooth web widget.
    * ------------------------------------------------------------------- */
+  var PADDLE_SPRITE_W = 36;
+  var PADDLE_SPRITE_H = 5;
+
+  Renderer.prototype._paddleSprite = function (hue, lightness, flash) {
+    var hueBucket = Math.round((((hue % 360) + 360) % 360) / 12) * 12 % 360;
+    var lightBucket = Math.round(lightness / 6) * 6;
+    var key = hueBucket + ':' + lightBucket + ':' + (flash ? 'f' : 'n');
+    var cached = this._paddleSprites[key];
+    if (cached) return cached;
+
+    var W = PADDLE_SPRITE_W;
+    var H = PADDLE_SPRITE_H;
+    var canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    var g = canvas.getContext('2d');
+    var body = hsl(hueBucket, 92, Math.min(82, lightBucket));
+    var bright = hsl(hueBucket, 100, Math.min(94, lightBucket + 22));
+    var dark = hsl((hueBucket + 10) % 360, 88, Math.max(24, lightBucket - 26));
+    var outline = 'rgba(4, 6, 14, 0.95)';
+
+    g.fillStyle = outline;
+    g.fillRect(0, 0, W, H);
+    g.clearRect(0, 0, 1, 1);
+    g.clearRect(W - 1, 0, 1, 1);
+    g.clearRect(0, H - 1, 1, 1);
+    g.clearRect(W - 1, H - 1, 1, 1);
+
+    g.fillStyle = body;
+    g.fillRect(1, 1, W - 2, H - 2);
+    g.fillStyle = bright;
+    g.fillRect(1, 1, W - 2, 1);
+    g.fillRect(1, 1, 3, H - 2);
+    g.fillRect(W - 4, 1, 3, H - 2);
+    g.fillStyle = dark;
+    g.fillRect(1, H - 2, W - 2, 1);
+
+    // tiny grip dither in the middle of the board
+    g.fillStyle = 'rgba(0, 0, 0, 0.24)';
+    g.fillRect(14, 2, 2, 1);
+    g.fillRect(19, 2, 2, 1);
+    g.fillRect(24, 2, 2, 1);
+
+    if (flash) {
+      g.fillStyle = 'rgba(255, 255, 255, 0.9)';
+      g.fillRect(1, 1, W - 2, 1);
+      g.fillRect(1, H - 2, W - 2, 1);
+      g.fillRect(1, 2, 2, H - 4);
+      g.fillRect(W - 3, 2, 2, H - 4);
+    }
+
+    this._paddleSprites[key] = canvas;
+    return canvas;
+  };
+
   Renderer.prototype._drawPaddle = function (session) {
     var ctx = this.ctx;
     var paddle = session.paddle;
     if (!paddle) return;
-    var x = paddle.left;
-    var y = paddle.top;
-    var w = paddle.width;
-    var h = paddle.height;
-    var radius = h * 0.5;
+
+    var multiplier = this._comboMultiplier(session);
+    var heat = clamp((multiplier - 1) / Math.max(1, config.COMBO_MAX - 1), 0, 1);
+    var hue = 190 + heat * 120 + this.comboGlow * 28;
+    var lightness = 60 + heat * 6 + this.beat * (3 + heat * 6);
+    var flash = paddle.flash > 0;
+    var sprite = this._paddleSprite(hue, lightness + (flash ? 16 : 0), flash);
 
     ctx.save();
-    ctx.shadowColor = 'rgba(77, 243, 255, 0.75)';
-    ctx.shadowBlur = paddle.flash > 0 ? 26 : 12;
-    var fill = ctx.createLinearGradient(x, y, x, y + h);
-    fill.addColorStop(0, '#f2ffff');
-    fill.addColorStop(0.45, '#5df3ff');
-    fill.addColorStop(1, '#1b7fa8');
-    ctx.fillStyle = fill;
-    roundRectPath(ctx, x, y, w, h, radius);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.globalAlpha = 0.8;
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.fillRect(x + w * 0.18, y + 1.2, w * 0.64, Math.max(1, h * 0.18));
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(
+      sprite,
+      Math.round(paddle.left),
+      Math.round(paddle.top),
+      Math.round(paddle.width),
+      Math.round(paddle.height)
+    );
     ctx.restore();
   };
 
