@@ -16,6 +16,12 @@ self-contained Windows executable is included for machines without Python.
 > a DJ-style combo light show, touch controls and local persistence. Open
 > `web/index.html` directly or publish it with the included GitHub Pages
 > workflow — no Python, no build step.
+>
+> The web build also adds a full **procedural music/sound layer**: every bounce,
+> crack, launch, level-clear and life-loss cue is synthesised live with Web Audio,
+> with four selectable instrument timbres (SINE / PIANO / CLASSICAL / ACOUSTIC), and
+> a DJ-style combo light show where the brick wall and paddle shift colour and
+> pulse to the rhythm of your hits.
 
 ![Brick Breaker gameplay](bb_v1/docs/screenshot.png)
 
