@@ -136,6 +136,21 @@ If you want to inspect or control it:
 `?quality=high|low` is a temporary override for testing; the DJ-booth choice is
 remembered in `localStorage`.
 
+## Troubleshooting
+
+- **Occasional whole-screen flash/blink:** normally the adaptive quality engine
+  changing the canvas backing resolution. It now changes at most once per ~3 s,
+  needs two bad FPS windows to step down, probes a higher scale at most once and
+  rolls back without retrying, and redraws immediately after the resize — so it
+  should settle after the first few seconds. Forcing **CRISP** or **FAST** in the
+  DJ booth keeps the scale fixed. If it still happens, check that browser
+  hardware acceleration is enabled.
+- **Bright pulsing during big combos:** that is the combo light show, not a
+  rendering bug. Turn it off in the DJ booth (or respect reduced motion).
+- **One flash when entering/leaving fullscreen or resizing the window:** the
+  browser is changing the viewport/CSS size; the canvas re-renders immediately
+  after that resize.
+
 ## Persistence
 
 `localStorage` (key `brick-breaker.web.v1`) stores best score, best combo, best

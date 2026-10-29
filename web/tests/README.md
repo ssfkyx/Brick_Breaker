@@ -89,6 +89,23 @@ the live values. Typical headless-Chrome measurements on this machine
 | 1440×900 @DPR1 | ~32 fps | 60 fps |
 | 390×844 @DPR2 (mobile) | — | 60 fps at full quality |
 
+Adaptive quality is deliberately damped: two bad windows are needed to step
+down, changes are at least 3 s apart, an upward probe is attempted at most once
+and rolled back if it does not hold, and the renderer is redrawn inside the
+resize call so a resized canvas is never presented blank. You can stress it with
+CPU throttling and inspect `__bb.perf.qualityChanges`:
+
+```bash
+node tests/browser-check.mjs --cpu 4 \
+  --url "file:///.../index.html?demo=playing" \
+  --width 1440 --height 900 --dpr 2 --wait 3000 \
+  --eval 'new Promise(r=>{const t=setInterval(()=>{},1000);setTimeout(()=>{clearInterval(t);r(window.__bb.perf)},12000)})'
+```
+
+Under 4× CPU throttle the quality steps down monotonically (1 → 0.8 → 0.6) and
+stays there; it does not alternate between scales (which is what used to look
+like a screen flash).
+
 Run your own with `--eval`:
 
 ```bash

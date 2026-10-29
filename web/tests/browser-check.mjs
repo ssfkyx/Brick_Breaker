@@ -194,6 +194,9 @@ async function main() {
   if (mobile) {
     await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
   }
+  if (args.cpu) {
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(args.cpu) });
+  }
 
   await cdp.send('Page.navigate', { url });
   await sleep(Number(args.wait || 2200));

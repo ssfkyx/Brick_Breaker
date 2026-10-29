@@ -53,8 +53,20 @@
       effectiveDpr: 1,
       backing: '0x0',
       lowWindows: 0,
-      highWindows: 0
+      highWindows: 0,
+      qualityChanges: 0
     };
+
+    // Adaptive-resolution control state.  Quality changes resize the canvas
+    // backing store, which is visible as a resolution step; keep them rare and
+    // monotonic-ish so the screen never "flashes" between two scales.
+    this._qualitySteps = [1, 0.9, 0.8, 0.7, 0.6];
+    this._qualityLastChange = 0;
+    this._qualityLowStreak = 0;
+    this._qualityHighStreak = 0;
+    this._qualityGraceUntil = (global.performance && performance.now ? performance.now() : Date.now()) + 2500;
+    this._autoUpgradeBlocked = false;
+    this._lastAutoUpgradeAt = 0;
 
     this.canvas = el('game');
     this.stage = el('stage');
@@ -163,18 +175,43 @@
     }
     this.session.resize(width, height);
     this.renderer.resize(width, height, this._deviceDpr);
+    // Give window/fullscreen resizes a moment to settle before auto-tuning.
+    this._qualityGraceUntil = this._now() + 1500;
     this._updatePerfReadout();
   };
 
+  App.prototype._now = function () {
+    return global.performance && performance.now ? performance.now() : Date.now();
+  };
+
+  App.prototype._closestQualityStep = function (scale) {
+    var steps = this._qualitySteps;
+    var closest = steps[0];
+    var best = Infinity;
+    for (var i = 0; i < steps.length; i += 1) {
+      var distance = Math.abs(steps[i] - scale);
+      if (distance < best) {
+        best = distance;
+        closest = steps[i];
+      }
+    }
+    return closest;
+  };
+
   /* Adaptive resolution: keep the simulation at 120 Hz but trade canvas
-   * backing resolution for frame rate when the device cannot keep up. */
+   * backing resolution for frame rate when the device cannot keep up.
+   * Redraw immediately after the resize so the freshly cleared canvas is never
+   * presented as a blank/black frame. */
   App.prototype._applyQuality = function (scale) {
-    var next = Math.max(0.6, Math.min(1, Math.round(scale * 100) / 100));
-    if (Math.abs(next - this._qualityScale) < 0.01) return;
+    var next = this._closestQualityStep(Math.max(0.6, Math.min(1, scale)));
+    if (Math.abs(next - this._qualityScale) < 0.001) return;
     this._qualityScale = next;
     this.perf.scale = next;
     this.renderer.setQualityScale(next);
     this.renderer.resize(this.renderer.width, this.renderer.height, this._deviceDpr);
+    this.perf.qualityChanges += 1;
+    this._qualityLastChange = this._now();
+    if (this.session) this.renderer.draw(this.session);
     this._updatePerfReadout();
   };
 
@@ -185,13 +222,14 @@
     this._autoQuality = mode === 'auto';
     this.saved.quality = mode;
     this.storage.update({ quality: mode });
+    this._qualityLowStreak = 0;
+    this._qualityHighStreak = 0;
+    this._autoUpgradeBlocked = false;
+    this._lastAutoUpgradeAt = 0;
+    this._qualityGraceUntil = this._now() + 2000;
     if (mode === 'high') this._applyQuality(1);
     else if (mode === 'low') this._applyQuality(0.7);
-    else {
-      this.perf.lowWindows = 0;
-      this.perf.highWindows = 0;
-      this._applyQuality(1);
-    }
+    else this._applyQuality(1);
     this._syncQualityButtons();
     this.toast(mode === 'auto' ? 'Quality: AUTO (adaptive)' : mode === 'high' ? 'Quality: CRISP' : 'Quality: FAST');
   };
@@ -205,34 +243,69 @@
     }
   };
 
+  /* Adapted quality with hysteresis:
+   *  - ignore the first couple of seconds (startup / mode switches),
+   *  - never change more than once per 3 s,
+   *  - two consecutive bad windows needed to downgrade,
+   *  - one step up only after ~5 s of stable 58+ fps,
+   *  - if that upward probe fails, step back down and stop auto-upgrading for
+   *    this session so the canvas never oscillates between two scales (the old
+   *    "screen flash"). */
   App.prototype._adaptQuality = function (fps) {
     if (!this._autoQuality) return;
-    if (fps < 45) {
-      this.perf.lowWindows += 1;
-      this._applyQuality(this._qualityScale * 0.85);
-    } else if (fps < 54 && this._qualityScale > 0.7) {
-      this.perf.lowWindows += 1;
-      this._applyQuality(this._qualityScale * 0.94);
-    } else {
-      this.perf.lowWindows = 0;
-      if (fps > 57 && this._qualityScale < 1) {
-        this.perf.highWindows += 1;
-        if (this.perf.highWindows >= 3) {
-          this._applyQuality(this._qualityScale + 0.05);
-          this.perf.highWindows = 0;
-        }
-      } else {
-        this.perf.highWindows = 0;
+    var now = this._now();
+    if (now < this._qualityGraceUntil) return;
+    if (now - this._qualityLastChange < 3000) return;
+
+    // If a previous automatic upgrade did not hold, revert it and stop probing.
+    if (this._lastAutoUpgradeAt && now - this._lastAutoUpgradeAt < 12000 && fps < 53) {
+      this._autoUpgradeBlocked = true;
+      this._lastAutoUpgradeAt = 0;
+      this._applyQuality(this._qualityScale - 0.1);
+      return;
+    }
+
+    var scale = this._qualityScale;
+
+    if (fps < 38) {
+      this._qualityLowStreak += 1;
+      this._qualityHighStreak = 0;
+      if (this._qualityLowStreak >= 2) {
+        this._applyQuality(scale - 0.2);
+        this._qualityLowStreak = 0;
       }
+      return;
+    }
+    if (fps < 50) {
+      this._qualityLowStreak += 1;
+      this._qualityHighStreak = 0;
+      if (this._qualityLowStreak >= 2) {
+        this._applyQuality(scale - 0.1);
+        this._qualityLowStreak = 0;
+      }
+      return;
+    }
+
+    this._qualityLowStreak = 0;
+    if (fps > 58 && scale < 1 && !this._autoUpgradeBlocked) {
+      this._qualityHighStreak += 1;
+      if (this._qualityHighStreak >= 6) {
+        this._lastAutoUpgradeAt = now;
+        this._qualityHighStreak = 0;
+        this._applyQuality(scale + 0.1);
+      }
+    } else {
+      this._qualityHighStreak = 0;
     }
   };
 
   App.prototype._updatePerfReadout = function () {
     this.perf.effectiveDpr = this.renderer.effectiveDpr;
     this.perf.backing = this.renderer.canvas.width + '×' + this.renderer.canvas.height;
+    this.perf.qualityMode = this._autoQuality ? 'AUTO' : this._qualityMode.toUpperCase();
     if (!this._showStats || !this.dom.perfHud) return;
     this.dom.perfHud.textContent = 'FPS ' + Math.round(this.perf.fps) +
-      ' · Q ' + this._qualityScale.toFixed(2) +
+      ' · Q ' + this._qualityScale.toFixed(2) + ' ' + this.perf.qualityMode +
       ' · ' + this.perf.backing + ' @' + this.renderer.effectiveDpr.toFixed(2) + 'x';
   };
 

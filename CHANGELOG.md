@@ -40,6 +40,15 @@ Version numbers before 1.0.0 are retrospective labels for the dated milestones.
   Headless-Chrome measurements on the dev machine improved from ~10 fps to
   **~60 fps** (adaptive) at 1440×900@DPR2, and 32 fps → 60 fps at DPR1; the
   deliberately coarse brick look also gives the arcade wall more character.
+- **Fixed occasional screen flashes in the web build.** The adaptive-resolution
+  engine could oscillate around its FPS threshold, resizing the canvas back and
+  forth every few seconds (a visible blink + blur jump). Quality is now quantised
+  to fixed steps, changes are limited to once per ~3 s, a downgrade needs two
+  consecutive bad windows, upward probes happen at most once per session and are
+  rolled back/blocked if they do not hold, and the renderer redraws immediately
+  inside the resize call so a just-cleared canvas is never presented blank. The
+  brick sprite cache is no longer flushed mid-run either. Verified under
+  DevTools CPU throttling: 1–2 monotonic quality changes and no oscillation.
 - Web test tooling with no npm dependency: 35 `node:test` simulation tests
   (`web/tests/core.test.mjs`) plus a DevTools-Protocol browser checker
   (`web/tests/browser-check.mjs`) for layout/DPR/overflow/console-error checks,

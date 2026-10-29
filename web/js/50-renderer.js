@@ -450,7 +450,9 @@
       g.fillRect(12, 5, 1, 1);
     }
 
-    if (Object.keys(this._brickSprites).length > 320) this._brickSprites = {};
+    // Keep the sprite cache alive for the whole run: rebuilding it mid-game
+    // causes a visible one-frame hitch. Worst case is a few thousand 20x8
+    // canvases (~a few MB), which is fine.
     this._brickSprites[key] = canvas;
     return canvas;
   };
