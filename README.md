@@ -6,6 +6,11 @@ A complete brick breaker game written in a single Python file with Pygame. The
 same source runs on Windows 10/11 and Linux, including WSL with WSLg. A
 self-contained Windows executable is included for machines without Python.
 
+> **This is my first software project.** I built it end to end: the single-file
+> Pygame game, its test suite and CI, the Windows packaging, and the zero-build
+> browser edition in [`web/`](web/README.md). If you are learning too, feel free
+> to use it as a reference — feedback is very welcome!
+
 > **New: web edition.** A zero-dependency browser rebuild lives in
 > [`web/`](web/README.md): neon-arcade visuals, Web Audio instrument timbres,
 > a DJ-style combo light show, touch controls and local persistence. Open

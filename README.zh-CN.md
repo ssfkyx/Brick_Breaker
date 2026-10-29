@@ -6,6 +6,10 @@
 Windows 10/11 与 Linux（含 WSLg）上运行；仓库同时提供一个自带运行时的 Windows
 可执行文件，机器上无需安装 Python。
 
+> **这是我的第一个软件项目。** 从单文件 Pygame 游戏、测试与 CI、Windows 打包，
+> 到 [`web/`](web/README.zh-CN.md) 里的零构建网页版，都是我一步步完成的。如果你也
+> 在学编程，欢迎拿它当参考，也欢迎提建议！
+
 > **新增：网页版。** 零依赖浏览器版在 [`web/`](web/README.zh-CN.md)：霓虹街机视觉、
 > Web Audio 实时乐器音色、连击 DJ 灯光秀、触控与本地持久化。直接打开
 > `web/index.html` 即可玩，也可以用自带的 GitHub Pages workflow 发布 —— 不需要
